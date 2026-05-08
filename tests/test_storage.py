@@ -88,3 +88,82 @@ def test_storage_initializes_side_tables_and_fts_triggers(tmp_path):
     ).fetchall()
     conn.close()
     assert len(rows) == 1
+
+
+def test_storage_upserts_summary_and_reads_recent_messages(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    store = ChatProxyStore(db_path)
+    store.initialize()
+    store.upsert_conversation(
+        conversation_id="chat-1",
+        now="2026-05-08T00:00:00Z",
+        resolver="header",
+        client_key="desktop",
+        assistant_key="kai",
+        title="kai",
+        metadata=None,
+    )
+    store.upsert_conversation(
+        conversation_id="chat-2",
+        now="2026-05-08T00:00:00Z",
+        resolver="header",
+        client_key="desktop",
+        assistant_key="kai",
+        title="kai",
+        metadata=None,
+    )
+
+    first_id = store.insert_message(
+        timestamp="2026-05-08T00:00:01Z",
+        role="user",
+        content="first",
+        conversation_title="kai",
+        conversation_id="chat-1",
+        message_id="msg-1",
+    )
+    second_id = store.insert_message(
+        timestamp="2026-05-08T00:00:02Z",
+        role="assistant",
+        content="second",
+        conversation_title="kai",
+        conversation_id="chat-1",
+        message_id="msg-2",
+    )
+    store.insert_message(
+        timestamp="2026-05-08T00:00:03Z",
+        role="user",
+        content="other chat",
+        conversation_title="kai",
+        conversation_id="chat-2",
+        message_id="msg-3",
+    )
+
+    store.upsert_summary(
+        conversation_id="chat-1",
+        summary="old summary",
+        last_message_id=first_id,
+        updated_at="2026-05-08T00:00:04Z",
+    )
+    store.upsert_summary(
+        conversation_id="chat-1",
+        summary="new summary",
+        last_message_id=second_id,
+        updated_at="2026-05-08T00:00:05Z",
+    )
+
+    summary = store.get_summary("chat-1")
+    assert summary["summary"] == "new summary"
+    assert summary["version"] == 2
+    assert summary["last_message_id"] == second_id
+    assert summary["status"] == "completed"
+
+    recent = store.get_recent_messages(conversation_id="chat-1", limit=30)
+    assert [row["content"] for row in recent] == ["first", "second"]
+    after_first = store.get_recent_messages(
+        conversation_id="chat-1",
+        limit=30,
+        after_message_id=first_id,
+    )
+    assert [row["content"] for row in after_first] == ["second"]

@@ -52,11 +52,24 @@ CREATE TABLE IF NOT EXISTS requests (
   FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
 );
 
+CREATE TABLE IF NOT EXISTS conversation_summaries (
+  conversation_id TEXT PRIMARY KEY,
+  summary TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  last_message_id INTEGER,
+  status TEXT,
+  error_text TEXT,
+  FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_requests_conversation_created
   ON requests(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
   ON conversations(updated_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_summaries_updated_at
+  ON conversation_summaries(updated_at);
 
 CREATE INDEX IF NOT EXISTS messages_timestamp_idx ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS messages_role_idx ON messages(role);
@@ -200,9 +213,9 @@ WHERE request_id = ?
         conversation_id: str,
         message_id: str,
         kind: str = "chat",
-    ) -> None:
+    ) -> int | None:
         if not content.strip():
-            return
+            return None
         with self.connect() as conn:
             conn.execute(
                 """
@@ -222,6 +235,117 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
                     kind,
                 ],
             )
+            row = conn.execute(
+                "SELECT id FROM messages WHERE message_id = ?",
+                [message_id],
+            ).fetchone()
+            return int(row["id"]) if row else None
+
+    def get_summary(self, conversation_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+SELECT conversation_id, summary, updated_at, version,
+       last_message_id, status, error_text
+FROM conversation_summaries
+WHERE conversation_id = ?
+""",
+                [conversation_id],
+            ).fetchone()
+            return dict(row) if row else None
+
+    def mark_summary_pending(self, *, conversation_id: str, now: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+INSERT INTO conversation_summaries(
+  conversation_id, summary, updated_at, version,
+  last_message_id, status, error_text
+)
+VALUES(?, '', ?, 0, NULL, 'pending', NULL)
+ON CONFLICT(conversation_id) DO UPDATE SET
+  updated_at = excluded.updated_at,
+  status = 'pending',
+  error_text = NULL
+""",
+                [conversation_id, now],
+            )
+
+    def mark_summary_error(
+        self,
+        *,
+        conversation_id: str,
+        now: str,
+        error_text: str,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+INSERT INTO conversation_summaries(
+  conversation_id, summary, updated_at, version,
+  last_message_id, status, error_text
+)
+VALUES(?, '', ?, 0, NULL, 'error', ?)
+ON CONFLICT(conversation_id) DO UPDATE SET
+  updated_at = excluded.updated_at,
+  status = 'error',
+  error_text = excluded.error_text
+""",
+                [conversation_id, now, error_text],
+            )
+
+    def upsert_summary(
+        self,
+        *,
+        conversation_id: str,
+        summary: str,
+        last_message_id: int | None,
+        updated_at: str,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+INSERT INTO conversation_summaries(
+  conversation_id, summary, updated_at, version,
+  last_message_id, status, error_text
+)
+VALUES(?, ?, ?, 1, ?, 'completed', NULL)
+ON CONFLICT(conversation_id) DO UPDATE SET
+  summary = excluded.summary,
+  updated_at = excluded.updated_at,
+  version = conversation_summaries.version + 1,
+  last_message_id = excluded.last_message_id,
+  status = 'completed',
+  error_text = NULL
+""",
+                [conversation_id, summary, updated_at, last_message_id],
+            )
+
+    def get_recent_messages(
+        self,
+        *,
+        conversation_id: str,
+        limit: int = 30,
+        after_message_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["conversation_id = ?"]
+        params: list[Any] = [conversation_id]
+        if after_message_id is not None:
+            clauses.append("id > ?")
+            params.append(after_message_id)
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+SELECT id, timestamp, role, content, conversation_title, kind
+FROM messages
+WHERE {' AND '.join(clauses)}
+ORDER BY id DESC
+LIMIT ?
+""",
+                params,
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
 
 
 def _json(value: Any) -> str | None:

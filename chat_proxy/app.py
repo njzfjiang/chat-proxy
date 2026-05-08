@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +21,7 @@ from .parsing import (
     sanitize_headers,
 )
 from .storage import ChatProxyStore
+from .summary import inject_rolling_summary, update_conversation_summary
 
 
 HOP_BY_HOP_HEADERS = {
@@ -45,6 +47,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     app = FastAPI(title="chat-proxy", version="0.1.0")
     app.state.config = cfg
     app.state.store = store
+    app.state.summary_tasks = set()
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
@@ -86,7 +89,9 @@ async def _handle_chat_completions(
     request_id = request_id_for(body_text, incoming_headers)
     identity = resolve_conversation(incoming_headers, body)
     prepared_body = prepare_request_body_for_upstream(incoming_headers, body)
-    upstream_body = prepared_body.body
+    summary_row = store.get_summary(identity.conversation_id)
+    summary_text = str(summary_row["summary"]) if summary_row else None
+    upstream_body = inject_rolling_summary(prepared_body.body, summary_text)
     now = _now()
     model_id = str(upstream_body.get("model") or body.get("model") or "") or None
     conversation_title = _conversation_title(identity)
@@ -96,6 +101,7 @@ async def _handle_chat_completions(
         "conversation_resolver": identity.resolver,
         "conversation_metadata": identity.metadata or {},
         "upstream_body_mode": prepared_body.mode,
+        "rolling_summary_injected": bool(summary_text and summary_text.strip()),
         "stripped_metadata": prepared_body.stripped_metadata or {},
         "path": str(request.url.path),
     }
@@ -141,6 +147,7 @@ async def _handle_chat_completions(
 
     if upstream_body.get("stream") is True:
         return await _stream_upstream(
+            app=request.app,
             cfg=cfg,
             store=store,
             request_id=request_id,
@@ -198,6 +205,12 @@ async def _handle_chat_completions(
                     content=assistant_text,
                 ),
             )
+            _schedule_summary_update(
+                app=request.app,
+                cfg=cfg,
+                store=store,
+                conversation_id=identity.conversation_id,
+            )
 
     if isinstance(response_payload, (dict, list)):
         return JSONResponse(
@@ -216,6 +229,7 @@ async def _handle_chat_completions(
 
 async def _stream_upstream(
     *,
+    app: FastAPI,
     cfg: ProxyConfig,
     store: ChatProxyStore,
     request_id: str,
@@ -288,6 +302,12 @@ async def _stream_upstream(
                         content=assistant_text,
                     ),
                 )
+                _schedule_summary_update(
+                    app=app,
+                    cfg=cfg,
+                    store=store,
+                    conversation_id=conversation_id,
+                )
 
     return StreamingResponse(
         body_iter(),
@@ -338,3 +358,24 @@ def _conversation_title(identity) -> str | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _schedule_summary_update(
+    *,
+    app: FastAPI,
+    cfg: ProxyConfig,
+    store: ChatProxyStore,
+    conversation_id: str,
+) -> None:
+    if not cfg.summary_enabled:
+        return
+    task = asyncio.create_task(
+        update_conversation_summary(
+            cfg=cfg,
+            store=store,
+            conversation_id=conversation_id,
+            now=_now(),
+        )
+    )
+    app.state.summary_tasks.add(task)
+    task.add_done_callback(app.state.summary_tasks.discard)

@@ -12,12 +12,33 @@ $env:CHAT_PROXY_DB="C:\Users\ellat\Desktop\K_Space\kmlog-search\chat_data\chat_s
 python -m chat_proxy.main
 ```
 
+The proxy automatically loads `.env` from the current working directory before
+reading config. Set `CHAT_PROXY_ENV_FILE` to use a different env file.
+
 Kelivo provider settings:
 
 - Base URL: `http://127.0.0.1:8787`
 - Chat Path: `/chat/completions`
 
 The proxy also accepts `/v1/chat/completions`.
+
+## Rolling Summary
+
+Rolling summaries are off by default. When enabled, the proxy stores one short
+summary per `conversation_id`, injects it into the next upstream request as a
+system message, and updates it asynchronously after assistant messages are
+written to SQLite.
+
+```powershell
+$env:CHAT_PROXY_SUMMARY_ENABLED="true"
+$env:CHAT_PROXY_SUMMARY_UPSTREAM_BASE="https://api.deepseek.com/v1"
+$env:CHAT_PROXY_SUMMARY_API_KEY="..."
+$env:CHAT_PROXY_SUMMARY_MODEL="deepseek-v4-flash"
+$env:CHAT_PROXY_SUMMARY_RECENT_K="30"
+```
+
+The original `request_json` stored in SQLite remains unchanged; only the
+forwarded upstream body receives the summary system message.
 
 ## Optional Metadata
 
