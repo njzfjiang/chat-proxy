@@ -63,6 +63,21 @@ CREATE TABLE IF NOT EXISTS conversation_summaries (
   FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
 );
 
+CREATE TABLE IF NOT EXISTS conversation_summary_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  summary TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_message_id INTEGER,
+  previous_last_message_id INTEGER,
+  source_message_count INTEGER,
+  model_id TEXT,
+  metadata_json TEXT,
+  FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id),
+  UNIQUE(conversation_id, version)
+);
+
 CREATE INDEX IF NOT EXISTS idx_requests_conversation_created
   ON requests(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
@@ -70,6 +85,12 @@ CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
   ON conversations(updated_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_summaries_updated_at
   ON conversation_summaries(updated_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_summary_versions_conversation_version
+  ON conversation_summary_versions(conversation_id, version);
+CREATE INDEX IF NOT EXISTS idx_conversation_summary_versions_conversation_created
+  ON conversation_summary_versions(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_summary_versions_last_message
+  ON conversation_summary_versions(last_message_id);
 
 CREATE INDEX IF NOT EXISTS messages_timestamp_idx ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS messages_role_idx ON messages(role);
@@ -301,24 +322,66 @@ ON CONFLICT(conversation_id) DO UPDATE SET
         summary: str,
         last_message_id: int | None,
         updated_at: str,
+        source_message_count: int | None = None,
+        model_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> None:
         with self.connect() as conn:
+            existing = conn.execute(
+                """
+SELECT version, last_message_id
+FROM conversation_summaries
+WHERE conversation_id = ?
+""",
+                [conversation_id],
+            ).fetchone()
+            next_version = int(existing["version"]) + 1 if existing else 1
+            previous_last_message_id = (
+                existing["last_message_id"] if existing else None
+            )
             conn.execute(
                 """
 INSERT INTO conversation_summaries(
   conversation_id, summary, updated_at, version,
   last_message_id, status, error_text
 )
-VALUES(?, ?, ?, 1, ?, 'completed', NULL)
+VALUES(?, ?, ?, ?, ?, 'completed', NULL)
 ON CONFLICT(conversation_id) DO UPDATE SET
   summary = excluded.summary,
   updated_at = excluded.updated_at,
-  version = conversation_summaries.version + 1,
+  version = excluded.version,
   last_message_id = excluded.last_message_id,
   status = 'completed',
   error_text = NULL
 """,
-                [conversation_id, summary, updated_at, last_message_id],
+                [
+                    conversation_id,
+                    summary,
+                    updated_at,
+                    next_version,
+                    last_message_id,
+                ],
+            )
+            conn.execute(
+                """
+INSERT INTO conversation_summary_versions(
+  conversation_id, version, summary, created_at,
+  last_message_id, previous_last_message_id,
+  source_message_count, model_id, metadata_json
+)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+""",
+                [
+                    conversation_id,
+                    next_version,
+                    summary,
+                    updated_at,
+                    last_message_id,
+                    previous_last_message_id,
+                    source_message_count,
+                    model_id,
+                    _json(metadata),
+                ],
             )
 
     def get_recent_messages(

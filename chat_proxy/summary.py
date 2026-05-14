@@ -25,6 +25,8 @@ Rules:
 - Keep the whole summary under about 180 words.
 - Prefer durable facts over recent phrasing.
 - Remove stale details.
+- Describe concrete actions, tone, and decisions; avoid re-labelling the relationship with generic kink labels (e.g. "dom/sub") or psychological diagnoses.
+- Do not introduce new category labels for the relationship; keep using the fox–cat / long-term partner framing implied by the conversation, unless the user explicitly defines another label.
 - Return only the updated rolling summary."""
 SUMMARY_INJECTION_PREFIX = "Rolling summary of this conversation so far:\n"
 
@@ -93,6 +95,8 @@ async def update_conversation_summary(
             summary=new_summary,
             last_message_id=last_message_id,
             updated_at=now,
+            source_message_count=len(messages),
+            model_id=cfg.summary_model,
         )
     except Exception as exc:
         store.mark_summary_error(

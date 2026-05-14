@@ -159,6 +159,22 @@ def test_storage_upserts_summary_and_reads_recent_messages(tmp_path):
     assert summary["last_message_id"] == second_id
     assert summary["status"] == "completed"
 
+    conn = sqlite3.connect(db_path)
+    versions = conn.execute(
+        """
+SELECT version, summary, last_message_id, previous_last_message_id
+FROM conversation_summary_versions
+WHERE conversation_id = ?
+ORDER BY version
+""",
+        ["chat-1"],
+    ).fetchall()
+    conn.close()
+    assert versions == [
+        (1, "old summary", first_id, None),
+        (2, "new summary", second_id, first_id),
+    ]
+
     recent = store.get_recent_messages(conversation_id="chat-1", limit=30)
     assert [row["content"] for row in recent] == ["first", "second"]
     after_first = store.get_recent_messages(

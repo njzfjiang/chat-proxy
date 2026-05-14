@@ -421,9 +421,16 @@ async def test_proxy_updates_summary_after_non_stream_response(
     row = conn.execute(
         "SELECT summary, version, status, error_text FROM conversation_summaries"
     ).fetchone()
+    history_row = conn.execute(
+        """
+SELECT version, summary, source_message_count, model_id
+FROM conversation_summary_versions
+"""
+    ).fetchone()
     conn.close()
 
     assert row == ("updated summary", 1, "completed", None)
+    assert history_row == (1, "updated summary", 2, "deepseek-v4-flash")
 
 
 @pytest.mark.anyio
@@ -485,9 +492,13 @@ async def test_proxy_records_summary_error_without_failing_chat(
     row = conn.execute(
         "SELECT status, error_text FROM conversation_summaries"
     ).fetchone()
+    history_count = conn.execute(
+        "SELECT COUNT(*) FROM conversation_summary_versions"
+    ).fetchone()[0]
     conn.close()
     assert row[0] == "error"
     assert "summary HTTP 500" in row[1]
+    assert history_count == 0
 
 
 @pytest.mark.anyio
