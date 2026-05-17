@@ -680,7 +680,7 @@ async def test_proxy_updates_daily_summary_without_conversation_summary(
     ).fetchone()
     candidate = conn.execute(
         """
-SELECT label, domain, function, primary_mother, status
+SELECT label, domain, function, primary_mother, target_layer, status
 FROM daily_memory_candidates
 """
     ).fetchone()
@@ -695,6 +695,7 @@ FROM daily_memory_candidates
         "rule",
         "daily_context",
         "F",
+        "mem0",
         "candidate",
     )
     assert conversation_count == 0

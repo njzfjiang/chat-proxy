@@ -45,7 +45,9 @@ forwarded upstream body receives the summary system message.
 Daily summaries are also off by default. When enabled, the proxy keeps an
 audit-friendly summary for the local day and stores proposed memory candidates
 using the Kai mapping categories. Candidates remain in SQLite with
-`status='candidate'`; they are not written to mem0 or the memory vault.
+`status='candidate'`; they are not written to mem0 or the memory vault. Each
+candidate also receives a deterministic `target_layer` suggestion:
+`anchor_table`, `wb`, `vault`, `mem0`, or `ignore`.
 
 ```powershell
 $env:CHAT_PROXY_DAILY_SUMMARY_ENABLED="true"

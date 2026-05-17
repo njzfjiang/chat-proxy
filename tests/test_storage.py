@@ -275,6 +275,7 @@ def test_storage_upserts_daily_summary_and_candidates(tmp_path):
     assert summary["last_message_id"] == second_id
     assert candidates[0]["label"] == "Daily summary module"
     assert candidates[0]["domain"] == "infra_asset"
+    assert candidates[0]["target_layer"] == "wb"
     assert candidates[0]["status"] == "candidate"
     assert candidates[0]["source_message_ids_json"] == f"[{first_id}, {second_id}]"
     assert [row["content"] for row in after_first] == ["second daily note"]
@@ -327,3 +328,49 @@ def test_storage_deletes_daily_summary_history_and_candidates(tmp_path):
     assert version_count == 0
     assert candidate_count == 0
     assert message_count == 1
+
+
+def test_storage_migrates_daily_memory_candidates_target_layer(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+CREATE TABLE daily_memory_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date_key TEXT NOT NULL,
+  summary_version INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  evidence TEXT,
+  domain TEXT NOT NULL,
+  function TEXT NOT NULL,
+  primary_mother TEXT NOT NULL,
+  secondary_mother TEXT,
+  importance INTEGER,
+  confidence TEXT,
+  source_message_ids_json TEXT,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  metadata_json TEXT,
+  created_at TEXT NOT NULL
+);
+"""
+    )
+    conn.close()
+
+    store = ChatProxyStore(db_path)
+    store.initialize()
+
+    conn = sqlite3.connect(db_path)
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(daily_memory_candidates)")
+    }
+    indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(daily_memory_candidates)")
+    }
+    conn.close()
+
+    assert "target_layer" in columns
+    assert "idx_daily_memory_candidates_target_layer" in indexes

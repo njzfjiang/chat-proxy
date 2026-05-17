@@ -31,7 +31,7 @@ DAILY_SUMMARY_FORMAT_INSTRUCTIONS = """Return only a JSON object with this shape
       "primary_mother": "A | B | C | D | E | F | G | H",
       "secondary_mother": "A | B | C | D | E | F | G | H | null",
       "importance": 1,
-      "confidence": "low | medium | high",
+      "confidence": "low | medium | high | very_high",
       "source_message_ids": [1]
     }
   ]
@@ -249,7 +249,7 @@ def _normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "importance": _clamp_importance(candidate.get("importance")),
         "confidence": _pick(
             candidate.get("confidence"),
-            {"low", "medium", "high"},
+            {"low", "medium", "high", "very_high"},
             "low",
         ),
         "source_message_ids": [

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .message_kind import classify_message_kind, normalize_message_kind
+from .memory_target import choose_target_layer, normalize_target_layer
 
 
 class ChatProxyStore:
@@ -116,6 +117,7 @@ CREATE TABLE IF NOT EXISTS daily_memory_candidates (
   secondary_mother TEXT,
   importance INTEGER,
   confidence TEXT,
+  target_layer TEXT,
   source_message_ids_json TEXT,
   status TEXT NOT NULL DEFAULT 'candidate',
   metadata_json TEXT,
@@ -165,6 +167,18 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
   INSERT INTO messages_fts(rowid, content, conversation_title)
   VALUES (new.id, new.content, new.conversation_title);
 END;
+"""
+            )
+            _ensure_column(
+                conn,
+                table_name="daily_memory_candidates",
+                column_name="target_layer",
+                definition="target_layer TEXT",
+            )
+            conn.execute(
+                """
+CREATE INDEX IF NOT EXISTS idx_daily_memory_candidates_target_layer
+  ON daily_memory_candidates(target_layer)
 """
             )
 
@@ -521,7 +535,7 @@ WHERE date_key = ?
                 f"""
 SELECT id, date_key, summary_version, label, evidence, domain,
        function, primary_mother, secondary_mother, importance,
-       confidence, source_message_ids_json, status, metadata_json,
+       confidence, target_layer, source_message_ids_json, status, metadata_json,
        created_at
 FROM daily_memory_candidates
 WHERE {' AND '.join(clauses)}
@@ -650,15 +664,18 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ],
             )
             for candidate in candidates or []:
+                target_layer = normalize_target_layer(
+                    candidate.get("target_layer")
+                ) or choose_target_layer(candidate)
                 conn.execute(
                     """
 INSERT INTO daily_memory_candidates(
   date_key, summary_version, label, evidence, domain,
   function, primary_mother, secondary_mother, importance,
-  confidence, source_message_ids_json, status, metadata_json,
+  confidence, target_layer, source_message_ids_json, status, metadata_json,
   created_at
 )
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?)
 """,
                     [
                         date_key,
@@ -671,6 +688,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?)
                         _optional_str(candidate.get("secondary_mother")),
                         _optional_int(candidate.get("importance")),
                         _optional_str(candidate.get("confidence")),
+                        target_layer,
                         _json(candidate.get("source_message_ids") or []),
                         _json(candidate.get("metadata")),
                         updated_at,
@@ -683,6 +701,21 @@ def _json(value: Any) -> str | None:
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    column_name: str,
+    definition: str,
+) -> None:
+    columns = {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {definition}")
 
 
 def _optional_str(value: Any) -> str | None:
