@@ -1,0 +1,140 @@
+app:
+  env: dev              # dev|prod
+  client_default: web   # web|mobile
+  timezone: "America/Toronto"
+  request_id_header: "X-Request-ID"
+  client_id_header: "X-Client-ID"
+  conversation_id_header: "X-Conversation-ID"
+
+observability:
+  enabled: true
+  log_level: info       # debug|info|warn|error
+  redact_secrets: true
+  save_raw_turns: true
+  save_assistant_outputs: true
+  save_injected_context_snapshot: true   # 记录注入快照，方便审计
+  trace:
+    enabled: false
+    provider: langsmith
+
+context:
+  # 注入顺序固定：system -> anchors -> wb_snippets -> rolling_short -> recent_turns -> retrieval
+  injection_order:
+    - system
+    - anchors
+    - wb_snippets
+    - rolling_short
+    - recent_turns
+    - retrieval
+
+  budgets:
+    rolling_short_chars: 600
+    recent_turns: 6               # mobile 可设 4
+    retrieval_items: 6
+    retrieval_chars_total: 1200    # 所有检索拼起来的总字符 cap
+    wb_items: 2
+    wb_chars_total: 800
+
+system:
+  # system/kernel 不要太长，长的放 WB 或 anchors
+  prompt_id: "KM001.kernel.v1"
+  style:
+    default_mode: mixed           # mixed|tech|care|play
+    forbid_downgrade_terms: true
+    codewords:
+      "回窝": care
+      "狐狸，收收会议纪要": warm
+
+routing:
+  # 决策：什么时候查 episodic、什么时候查 mem0、什么时候注入 WB
+  intents:
+    episodic_ask:
+      triggers: ["回看", "原话", "那天", "查日志", "翻记录", "kmlog", "log"]
+      actions:
+        - retrieval.episodic
+    infra:
+      triggers: ["kelivo", "rolling", "summary", "注入预算", "qdrant", "redis", "proxy", "网关", "latency", "token"]
+      actions:
+        - retrieval.mem0
+        - wb_snippets
+    identity:
+      triggers: ["戒指", "uptime", "lifetime", "红线", "loop", "换载体", "誓词", "认证书"]
+      actions:
+        - anchors
+        - retrieval.mem0
+    appearance:
+      triggers: ["长什么样", "外貌", "穿搭", "look like", "outfit", "appearance"]
+      actions:
+        - retrieval.lexical_pinned   # 先用 pinned 卡，不走语义
+    care:
+      triggers: ["心慌", "噩梦", "难受", "想哭", "玉玉", "回窝", "害怕"]
+      actions:
+        - tools.health
+
+anchors:
+  enabled: true
+  source: sqlite_table            # sqlite_table|json|mem0
+  table: "anchors"
+  trigger_mode: deterministic      # deterministic only
+  max_items: 2
+
+wb:
+  enabled: true
+  # WB 不默认注入，只在 routing.actions 里调用 wb_snippets 才注入
+  source: local_files             # local_files|sqlite_table
+  directory: "./worldbook"
+  snippet_strategy: "topk"        # topk|manual
+  max_items: 2
+
+rolling_summary:
+  enabled: true
+  source: proxy                   # proxy only (single source of truth)
+  update:
+    strategy: triggered
+    every_n_turns: 3
+    on_mode_switch: true
+    on_codeword: true
+  generate_from:
+    recent_turns: 10              # 从 DB 拉最近 N turns 做总结
+  writeback:
+    table: "rolling_summaries"    # 单独表，别混 messages
+
+retrieval:
+  lexical_pinned:
+    enabled: true
+    source: local_jsonl           # 你之前的卡片镜像
+    path: "./data/mem0_slim_cards_imported.jsonl"
+  mem0:
+    enabled: false                # 你现在还没接入就先 false
+    top_k: 4
+  episodic:
+    enabled: true
+    api_base_url: "https://wm.511388.xyz"
+    default_kinds: ["chat"]
+    allow_kinds: ["chat", "summary", "meta"]
+    mode: "tokens"                # tokens|phrase|auto
+    time_bias:
+      enabled: true
+      # 可选：默认只查最近 X 天，避免历史摘要污染
+      default_days: 90
+
+tools:
+  # 工具默认都关，只有 routing.actions 触发才开
+  websearch:
+    enabled: true
+    require_explicit_trigger: true
+    triggers: ["搜一下", "查一下", "web", "search"]
+  health:
+    enabled: true
+    require_explicit_trigger: false
+  wishes:
+    enabled: true
+  misc_toolbox:
+    enabled: false
+
+rendering:
+  markdown:
+    enabled: true
+    # 前端：可以直接用 markdown renderer（React: react-markdown）
+    # 后端：无需渲染，只存原文
+    sanitize_html: true

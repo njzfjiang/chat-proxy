@@ -17,6 +17,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow: hidden;
   background:
     linear-gradient(180deg, rgba(246, 243, 237, 0.88), rgba(235, 239, 234, 0.94)),
     #f6f3ed;
@@ -35,7 +36,9 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -95,6 +98,37 @@ h3 {
   gap: 8px;
 }
 
+.conversation-filter {
+  display: grid;
+  gap: 8px;
+}
+
+.conversation-filter input[type="text"],
+.conversation-filter > input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #cbd5d0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #182021;
+  padding: 8px 9px;
+  outline: none;
+}
+
+.conversation-filter input:focus {
+  border-color: #4c7b68;
+  box-shadow: 0 0 0 3px rgba(76, 123, 104, 0.14);
+}
+
+.conversation-filter label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #62706b;
+  font-size: 0.82rem;
+  font-weight: 740;
+}
+
 .primary-action,
 .icon-button,
 .send-button {
@@ -132,13 +166,25 @@ h3 {
 
 .conversation-row {
   display: grid;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
   width: 100%;
   padding: 10px;
   border: 1px solid transparent;
   border-radius: 8px;
   color: #25302f;
   background: transparent;
+}
+
+.conversation-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
   text-align: left;
 }
 
@@ -171,9 +217,34 @@ h3 {
   font-size: 0.78rem;
 }
 
+.conversation-tools {
+  display: inline-flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.conversation-row:hover .conversation-tools,
+.conversation-row.active .conversation-tools {
+  opacity: 1;
+}
+
+.conversation-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  border: 1px solid #cbd5d0;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #52635d;
+}
+
 .main-pane {
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex-direction: column;
 }
 
@@ -212,11 +283,29 @@ h3 {
 }
 
 .error-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   border-bottom: 1px solid #dfb8b0;
   background: #fff0ed;
   color: #8b2f25;
   padding: 9px 18px;
   font-size: 0.9rem;
+}
+
+.error-strip span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.error-strip button {
+  border: 1px solid #c77d70;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #8b2f25;
+  padding: 5px 10px;
+  font-weight: 740;
 }
 
 .chat-grid {
@@ -274,11 +363,124 @@ h3 {
   text-transform: uppercase;
 }
 
+.message-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.message-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  border: 1px solid #d4ddd8;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #66736d;
+  padding: 0 8px;
+  font-size: 0.76rem;
+  font-weight: 740;
+  text-transform: uppercase;
+}
+
+.message-tools button:hover {
+  border-color: #cbd5d0;
+  background: #ffffff;
+  color: #25302f;
+}
+
+.message-tools .danger-tool {
+  color: #8b4a43;
+}
+
+.message-tools .danger-tool:hover {
+  border-color: #d8b1aa;
+  color: #8b2f25;
+}
+
 .message-content {
   margin-top: 7px;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.52;
+}
+
+.message-token-line {
+  margin-top: 7px;
+  color: #76817b;
+  font-size: 0.76rem;
+  font-weight: 680;
+}
+
+.markdown-body {
+  display: grid;
+  gap: 0.58em;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body blockquote,
+.markdown-body pre,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 0;
+}
+
+.markdown-body ul {
+  padding-left: 1.25rem;
+}
+
+.markdown-body li + li {
+  margin-top: 0.22em;
+}
+
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-size: 0.98em;
+  line-height: 1.3;
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid #bfd1c8;
+  color: #52635d;
+  padding-left: 10px;
+}
+
+.markdown-body code {
+  border: 1px solid #d8ded9;
+  border-radius: 6px;
+  background: #f6f7f5;
+  padding: 0.08em 0.32em;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+.markdown-body pre {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid #d8ded9;
+  border-radius: 8px;
+  background: #202928;
+  color: #f3f6f2;
+  padding: 10px;
+}
+
+.markdown-body pre code {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  white-space: pre;
+}
+
+.stream-placeholder {
+  color: #7a847e;
+  font-style: italic;
 }
 
 .empty-state {
@@ -356,6 +558,32 @@ h3 {
 .panel-head {
   gap: 8px;
   color: #273735;
+}
+
+.panel-head h3 {
+  flex: 1;
+}
+
+.panel-close {
+  width: 32px;
+  min-height: 32px;
+}
+
+.panel-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  min-height: 30px;
+  border: 1px solid #cbd5d0;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #52635d;
+}
+
+.panel-tool:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .settings-panel label {
@@ -454,7 +682,18 @@ h3 {
   }
 
   .inspector {
-    display: none;
+    position: fixed;
+    z-index: 25;
+    inset: 0 0 0 auto;
+    display: flex;
+    width: min(90vw, 360px);
+    transform: translateX(100%);
+    transition: transform 160ms ease;
+    box-shadow: -18px 0 36px rgba(37, 48, 47, 0.16);
+  }
+
+  .inspector.open {
+    transform: translateX(0);
   }
 
   .status-pill span {
@@ -483,5 +722,18 @@ h3 {
 
   .send-button {
     width: 44px;
+  }
+
+  .conversation-tools {
+    opacity: 1;
+  }
+
+  .message-tools button span {
+    display: none;
+  }
+
+  .message-tools button {
+    width: 30px;
+    padding: 0;
   }
 }

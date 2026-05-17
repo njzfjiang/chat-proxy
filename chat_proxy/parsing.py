@@ -384,14 +384,47 @@ def extract_chat_completion_text(response: Mapping[str, Any]) -> str | None:
     return None
 
 
+def extract_token_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    out: dict[str, int] = {}
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
+    ):
+        value = usage.get(key)
+        if isinstance(value, int):
+            out[key] = value
+    prompt_details = usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict):
+        cached = prompt_details.get("cached_tokens")
+        if isinstance(cached, int):
+            out["cached_tokens"] = cached
+    completion_details = usage.get("completion_tokens_details")
+    if isinstance(completion_details, dict):
+        reasoning = completion_details.get("reasoning_tokens")
+        if isinstance(reasoning, int):
+            out["reasoning_tokens"] = reasoning
+    return out or None
+
+
 class SseTextAccumulator:
     def __init__(self) -> None:
         self._buffer = ""
         self._parts: list[str] = []
+        self._usage: dict[str, int] | None = None
 
     @property
     def text(self) -> str:
         return "".join(self._parts)
+
+    @property
+    def usage(self) -> dict[str, int] | None:
+        return self._usage
 
     def add_bytes(self, chunk: bytes) -> None:
         self._buffer += chunk.decode("utf-8", errors="replace")
@@ -411,6 +444,9 @@ class SseTextAccumulator:
             return
         if not isinstance(decoded, dict):
             return
+        usage = extract_token_usage(decoded)
+        if usage:
+            self._usage = usage
         choices = decoded.get("choices")
         if isinstance(choices, list) and choices:
             first = choices[0]

@@ -65,6 +65,11 @@ def upstream_app():
                         }
                     }
                 ],
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 5,
+                    "total_tokens": 13,
+                },
             }
         )
 
@@ -73,6 +78,7 @@ def upstream_app():
         async def chunks():
             yield b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'
             yield b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
+            yield b'data: {"usage":{"prompt_tokens":6,"completion_tokens":2,"total_tokens":8}}\n\n'
             yield b"data: [DONE]\n\n"
 
         return StreamingResponse(chunks(), media_type="text/event-stream")
@@ -719,6 +725,11 @@ async def test_web_chat_endpoint_uses_explicit_identity_and_exposes_history(
                 "choices": [
                     {"message": {"role": "assistant", "content": "web answer"}}
                 ],
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 5,
+                    "total_tokens": 13,
+                },
             }
         )
 
@@ -774,12 +785,233 @@ async def test_web_chat_endpoint_uses_explicit_identity_and_exposes_history(
     assert captured_headers["authorization"] == "Bearer backend-secret"
     assert conversations.json()["conversations"][0]["conversation_id"] == "mobile-chat"
     assert conversations.json()["conversations"][0]["client_id"] == "phone-1"
+    assert conversations.json()["conversations"][0]["title"] == "hello mobile"
     assert [row["role"] for row in messages.json()["messages"]] == [
         "user",
         "assistant",
     ]
     assert messages.json()["messages"][0]["content"] == "hello mobile"
+    assert messages.json()["messages"][1]["token_usage"] == {
+        "prompt_tokens": 8,
+        "completion_tokens": 5,
+        "total_tokens": 13,
+    }
     assert rolling.json() == {"conversation_id": "mobile-chat", "summary": None}
+
+
+@pytest.mark.anyio
+async def test_web_chat_uses_db_recent_turns_for_context(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    captured_body = {}
+
+    async def completions(request: Request):
+        captured_body.update(await request.json())
+        return JSONResponse(
+            {
+                "id": "cmpl-test",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "context answer"}}
+                ],
+            }
+        )
+
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            chat_model="backend-chat-model",
+            chat_recent_k=2,
+        )
+    )
+    app.state.store.insert_message(
+        timestamp="2026-05-17T00:00:00Z",
+        role="user",
+        content="older user",
+        conversation_title="kai",
+        conversation_id="mobile-chat",
+        message_id="old-user",
+    )
+    app.state.store.insert_message(
+        timestamp="2026-05-17T00:00:01Z",
+        role="assistant",
+        content="recent assistant",
+        conversation_title="kai",
+        conversation_id="mobile-chat",
+        message_id="recent-assistant",
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat",
+            json={
+                "client_id": "phone-1",
+                "conversation_id": "mobile-chat",
+                "request_id": "req-mobile-context",
+                "assistant_key": "kai",
+                "user_text": "new mobile text",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert captured_body["messages"] == [
+        {"role": "user", "content": "older user"},
+        {"role": "assistant", "content": "recent assistant"},
+        {"role": "user", "content": "new mobile text"},
+    ]
+    conn = sqlite3.connect(db_path)
+    metadata = json.loads(
+        conn.execute("SELECT metadata_json FROM requests").fetchone()[0]
+    )
+    conn.close()
+    snapshot = metadata["injected_context_snapshot"]
+    assert snapshot["mode"] == "db_recent_turns"
+    recent = next(
+        component
+        for component in snapshot["components"]
+        if component["name"] == "recent_turns"
+    )
+    current_user = next(
+        component
+        for component in snapshot["components"]
+        if component["name"] == "current_user"
+    )
+    assert recent["message_count"] == 2
+    assert current_user["chars"] == len("new mobile text")
+
+
+@pytest.mark.anyio
+async def test_web_chat_injects_matching_worldbook_snippets(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    worldbook_path = tmp_path / "worldbook.json"
+    second_worldbook_path = tmp_path / "second-worldbook.json"
+    worldbook_path.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "entries": [
+                        {
+                            "id": "city",
+                            "name": "City memory",
+                            "enabled": True,
+                            "priority": 10,
+                            "content": "Hangzhou and spring context.",
+                            "keywords": ["杭州"],
+                        },
+                        {
+                            "id": "quiet",
+                            "name": "Quiet entry",
+                            "enabled": True,
+                            "priority": 99,
+                            "content": "Should not appear.",
+                            "keywords": ["not-triggered"],
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    second_worldbook_path.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "name": "Second book",
+                    "entries": [
+                        {
+                            "id": "long-term",
+                            "name": "Long-term memory",
+                            "enabled": True,
+                            "priority": 50,
+                            "content": "Long-term memory context.",
+                            "keywords": ["春天"],
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured_body = {}
+
+    async def completions(request: Request):
+        captured_body.update(await request.json())
+        return JSONResponse(
+            {
+                "id": "cmpl-test",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "worldbook answer"}}
+                ],
+            }
+        )
+
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            worldbook_enabled=True,
+            worldbook_path=worldbook_path,
+            worldbook_paths=(worldbook_path, second_worldbook_path),
+        )
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat",
+            json={
+                "client_id": "phone-1",
+                "conversation_id": "mobile-chat",
+                "request_id": "req-worldbook",
+                "assistant_key": "kai",
+                "user_text": "想聊聊杭州的春天",
+            },
+        )
+        debug = await client.get("/admin/requests?conversation_id=mobile-chat")
+
+    assert resp.status_code == 200
+    assert captured_body["messages"][0]["role"] == "system"
+    assert "Long-term memory" in captured_body["messages"][0]["content"]
+    assert "Long-term memory context." in captured_body["messages"][0]["content"]
+    snapshot = debug.json()["requests"][0]["metadata"]["injected_context_snapshot"]
+    wb = next(component for component in snapshot["components"] if component["name"] == "wb_snippets")
+    assert wb["items"][0]["id"] == "long-term"
+    assert wb["items"][0]["book_name"] == "Second book"
+    assert wb["items"][0]["keyword"] == "春天"
 
 
 @pytest.mark.anyio
@@ -834,3 +1066,179 @@ async def test_web_chat_replays_completed_explicit_request_id(
     assert second.status_code == 200
     assert first.json() == second.json()
     assert call_count == 1
+
+
+@pytest.mark.anyio
+async def test_conversation_can_be_renamed_and_archived(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        created = await client.post(
+            "/conversations",
+            json={
+                "conversation_id": "chat-archive",
+                "client_id": "phone-1",
+                "assistant_key": "kai",
+                "title": "Old title",
+            },
+        )
+        renamed = await client.patch(
+            "/conversations/chat-archive",
+            json={"title": "New title"},
+        )
+        archived = await client.patch(
+            "/conversations/chat-archive",
+            json={"archived": True},
+        )
+        visible = await client.get("/conversations")
+        with_archived = await client.get("/conversations?include_archived=true")
+
+    assert created.status_code == 200
+    assert renamed.status_code == 200
+    assert renamed.json()["conversation"]["title"] == "New title"
+    assert archived.status_code == 200
+    assert archived.json()["conversation"]["archived_at"]
+    assert visible.json()["conversations"] == []
+    assert with_archived.json()["conversations"][0]["conversation_id"] == "chat-archive"
+
+
+@pytest.mark.anyio
+async def test_conversation_can_branch_through_message(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+    app.state.store.upsert_conversation(
+        conversation_id="source-chat",
+        now="2026-05-17T00:00:00Z",
+        resolver="webapp",
+        client_key="phone-1",
+        assistant_key="kai",
+        title="Source",
+        metadata=None,
+    )
+    first_id = app.state.store.insert_message(
+        timestamp="2026-05-17T00:00:01Z",
+        role="user",
+        content="first",
+        conversation_title="Source",
+        conversation_id="source-chat",
+        message_id="source-1",
+    )
+    second_id = app.state.store.insert_message(
+        timestamp="2026-05-17T00:00:02Z",
+        role="assistant",
+        content="second",
+        conversation_title="Source",
+        conversation_id="source-chat",
+        message_id="source-2",
+    )
+    app.state.store.insert_message(
+        timestamp="2026-05-17T00:00:03Z",
+        role="user",
+        content="third",
+        conversation_title="Source",
+        conversation_id="source-chat",
+        message_id="source-3",
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        branched = await client.post(
+            "/conversations/source-chat/branches",
+            json={
+                "conversation_id": "branch-chat",
+                "source_message_id": second_id,
+                "title": "Branch",
+            },
+        )
+        branch_messages = await client.get("/conversations/branch-chat/messages")
+
+    assert first_id is not None
+    assert branched.status_code == 200
+    assert branched.json()["copied_message_count"] == 2
+    assert [row["content"] for row in branch_messages.json()["messages"]] == [
+        "first",
+        "second",
+    ]
+
+
+@pytest.mark.anyio
+async def test_conversation_message_can_be_deleted(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+    app.state.store.upsert_conversation(
+        conversation_id="delete-chat",
+        now="2026-05-17T00:00:00Z",
+        resolver="webapp",
+        client_key="phone-1",
+        assistant_key="kai",
+        title="Delete",
+        metadata=None,
+    )
+    message_id = app.state.store.insert_message(
+        timestamp="2026-05-17T00:00:01Z",
+        role="user",
+        content="remove this",
+        conversation_title="Delete",
+        conversation_id="delete-chat",
+        message_id="delete-1",
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        deleted = await client.delete(
+            f"/conversations/delete-chat/messages/{message_id}"
+        )
+        messages = await client.get("/conversations/delete-chat/messages")
+
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert messages.json()["messages"] == []
+
+
+@pytest.mark.anyio
+async def test_rolling_summary_versions_and_rollback(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+    app.state.store.upsert_summary(
+        conversation_id="summary-chat",
+        summary="first summary",
+        last_message_id=None,
+        updated_at="2026-05-17T00:00:01Z",
+    )
+    app.state.store.upsert_summary(
+        conversation_id="summary-chat",
+        summary="second summary",
+        last_message_id=None,
+        updated_at="2026-05-17T00:00:02Z",
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        versions = await client.get(
+            "/conversations/summary-chat/rolling-short/versions"
+        )
+        rollback = await client.post(
+            "/conversations/summary-chat/rolling-short/rollback",
+            json={"version": 1},
+        )
+        rolling = await client.get("/conversations/summary-chat/rolling-short")
+
+    assert versions.status_code == 200
+    assert [row["version"] for row in versions.json()["versions"]] == [2, 1]
+    assert rollback.status_code == 200
+    assert rollback.json()["summary"]["version"] == 3
+    assert rolling.json()["summary"]["summary"] == "first summary"

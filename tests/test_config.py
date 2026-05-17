@@ -9,7 +9,12 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
                 "CHAT_PROXY_UPSTREAM_BASE=https://from-env-file.example/v1",
                 "CHAT_PROXY_UPSTREAM_API_KEY='chat-key'",
                 "CHAT_PROXY_CHAT_MODEL=chat-model",
+                "CHAT_PROXY_CHAT_RECENT_K=17",
                 "CHAT_PROXY_PROVIDER_KEY=deepseek",
+                f"CHAT_PROXY_WORLDBOOK_PATH={tmp_path / 'worldbook.json'}",
+                f"CHAT_PROXY_WORLDBOOK_PATHS={tmp_path / 'wb2.json'};{tmp_path / 'wb3.json'}",
+                "CHAT_PROXY_WORLDBOOK_MAX_ITEMS=3",
+                "CHAT_PROXY_WORLDBOOK_CHARS_TOTAL=900",
                 "CHAT_PROXY_SUMMARY_ENABLED=true",
                 "CHAT_PROXY_SUMMARY_MODEL='deepseek-v4-flash'",
                 "CHAT_PROXY_SUMMARY_API_KEY=\"abc#123\"",
@@ -25,7 +30,12 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     monkeypatch.delenv("CHAT_PROXY_SUMMARY_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_UPSTREAM_API_KEY", raising=False)
     monkeypatch.delenv("CHAT_PROXY_CHAT_MODEL", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_CHAT_RECENT_K", raising=False)
     monkeypatch.delenv("CHAT_PROXY_PROVIDER_KEY", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_WORLDBOOK_PATH", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_WORLDBOOK_PATHS", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_WORLDBOOK_MAX_ITEMS", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_WORLDBOOK_CHARS_TOTAL", raising=False)
     monkeypatch.delenv("CHAT_PROXY_SUMMARY_MODEL", raising=False)
     monkeypatch.delenv("CHAT_PROXY_SUMMARY_API_KEY", raising=False)
     monkeypatch.delenv("CHAT_PROXY_DAILY_SUMMARY_ENABLED", raising=False)
@@ -37,7 +47,17 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     assert cfg.upstream_base == "https://real-env.example/v1"
     assert cfg.upstream_api_key == "chat-key"
     assert cfg.chat_model == "chat-model"
+    assert cfg.chat_recent_k == 17
     assert cfg.provider_key == "deepseek"
+    assert cfg.worldbook_enabled is True
+    assert cfg.worldbook_path == tmp_path / "worldbook.json"
+    assert cfg.worldbook_paths == (
+        tmp_path / "worldbook.json",
+        tmp_path / "wb2.json",
+        tmp_path / "wb3.json",
+    )
+    assert cfg.worldbook_max_items == 3
+    assert cfg.worldbook_chars_total == 900
     assert cfg.summary_enabled is True
     assert cfg.summary_model == "deepseek-v4-flash"
     assert cfg.summary_api_key == "abc#123"

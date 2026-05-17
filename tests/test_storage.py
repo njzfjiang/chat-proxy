@@ -184,6 +184,20 @@ ORDER BY version
     )
     assert [row["content"] for row in after_first] == ["second"]
 
+    rollback = store.rollback_summary(
+        conversation_id="chat-1",
+        target_version=1,
+        now="2026-05-08T00:00:06Z",
+    )
+    assert rollback["summary"] == "old summary"
+    assert rollback["version"] == 3
+    versions_after_rollback = store.list_summary_versions(
+        conversation_id="chat-1",
+        limit=10,
+    )
+    assert [row["version"] for row in versions_after_rollback] == [3, 2, 1]
+    assert "rollback" in versions_after_rollback[0]["metadata_json"]
+
 
 def test_storage_auto_classifies_inserted_message_kind(tmp_path):
     db_path = tmp_path / "chat_search.db"
@@ -216,6 +230,37 @@ def test_storage_auto_classifies_inserted_message_kind(tmp_path):
     conn.close()
 
     assert rows == [("msg-noise", "noise"), ("msg-explicit-chat", "chat")]
+
+
+def test_storage_deletes_message_from_messages_and_fts(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    store = ChatProxyStore(db_path)
+    store.initialize()
+    message_id = store.insert_message(
+        timestamp="2026-05-08T00:00:01Z",
+        role="user",
+        content="delete me needle",
+        conversation_title="kai",
+        conversation_id="chat-1",
+        message_id="msg-delete",
+    )
+
+    assert message_id is not None
+    assert store.delete_message(conversation_id="chat-1", message_id=message_id)
+    assert not store.delete_message(conversation_id="chat-1", message_id=message_id)
+
+    conn = sqlite3.connect(db_path)
+    message_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    fts_rows = conn.execute(
+        "SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?",
+        ('"delete me needle"',),
+    ).fetchall()
+    conn.close()
+
+    assert message_count == 0
+    assert fts_rows == []
 
 
 def test_storage_upserts_daily_summary_and_candidates(tmp_path):

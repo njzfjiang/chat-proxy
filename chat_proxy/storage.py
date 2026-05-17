@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   client_key TEXT,
   assistant_key TEXT,
   title TEXT,
+  archived_at TEXT,
   metadata_json TEXT
 );
 
@@ -171,14 +172,37 @@ END;
             )
             _ensure_column(
                 conn,
+                table_name="conversations",
+                column_name="archived_at",
+                definition="archived_at TEXT",
+            )
+            _ensure_column(
+                conn,
                 table_name="daily_memory_candidates",
                 column_name="target_layer",
                 definition="target_layer TEXT",
+            )
+            _ensure_column(
+                conn,
+                table_name="messages",
+                column_name="request_id",
+                definition="request_id TEXT",
+            )
+            _ensure_column(
+                conn,
+                table_name="messages",
+                column_name="token_usage_json",
+                definition="token_usage_json TEXT",
             )
             conn.execute(
                 """
 CREATE INDEX IF NOT EXISTS idx_daily_memory_candidates_target_layer
   ON daily_memory_candidates(target_layer)
+"""
+            )
+            conn.execute(
+                """
+CREATE INDEX IF NOT EXISTS messages_request_idx ON messages(request_id)
 """
             )
 
@@ -206,7 +230,14 @@ ON CONFLICT(conversation_id) DO UPDATE SET
   resolver = excluded.resolver,
   client_key = COALESCE(excluded.client_key, conversations.client_key),
   assistant_key = COALESCE(excluded.assistant_key, conversations.assistant_key),
-  title = COALESCE(excluded.title, conversations.title),
+  title = CASE
+    WHEN excluded.title IS NULL OR excluded.title = '' THEN conversations.title
+    WHEN conversations.title IS NULL OR conversations.title = ''
+      THEN excluded.title
+    WHEN conversations.title = conversations.assistant_key
+      THEN excluded.title
+    ELSE conversations.title
+  END,
   metadata_json = COALESCE(excluded.metadata_json, conversations.metadata_json)
 """,
                 [
@@ -221,11 +252,17 @@ ON CONFLICT(conversation_id) DO UPDATE SET
                 ],
             )
 
-    def list_conversations(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def list_conversations(
+        self,
+        *,
+        limit: int = 50,
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, 200))
+        where = "" if include_archived else "WHERE c.archived_at IS NULL"
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
 SELECT
   c.conversation_id,
   c.created_at,
@@ -234,6 +271,7 @@ SELECT
   c.client_key,
   c.assistant_key,
   c.title,
+  c.archived_at,
   c.metadata_json,
   COUNT(m.id) AS message_count,
   MAX(m.id) AS last_message_id,
@@ -258,6 +296,7 @@ SELECT
 FROM conversations c
 LEFT JOIN messages m ON m.conversation_id = c.conversation_id
 LEFT JOIN conversation_summaries s ON s.conversation_id = c.conversation_id
+{where}
 GROUP BY c.conversation_id
 ORDER BY COALESCE(MAX(m.timestamp), c.updated_at) DESC, c.updated_at DESC
 LIMIT ?
@@ -265,6 +304,67 @@ LIMIT ?
                 [safe_limit],
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def update_conversation(
+        self,
+        *,
+        conversation_id: str,
+        now: str,
+        title: str | None = None,
+        archived: bool | None = None,
+    ) -> dict[str, Any] | None:
+        assignments = ["updated_at = ?"]
+        params: list[Any] = [now]
+        if title is not None:
+            assignments.append("title = ?")
+            params.append(title)
+        if archived is not None:
+            assignments.append("archived_at = ?")
+            params.append(now if archived else None)
+        params.append(conversation_id)
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+UPDATE conversations
+SET {', '.join(assignments)}
+WHERE conversation_id = ?
+""",
+                params,
+            )
+            row = conn.execute(
+                """
+SELECT conversation_id, created_at, updated_at, resolver,
+       client_key, assistant_key, title, archived_at, metadata_json
+FROM conversations
+WHERE conversation_id = ?
+""",
+                [conversation_id],
+            ).fetchone()
+        return dict(row) if row else None
+
+    def touch_conversation(self, *, conversation_id: str, now: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+UPDATE conversations
+SET updated_at = ?
+WHERE conversation_id = ?
+""",
+                [now, conversation_id],
+            )
+
+    def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+SELECT conversation_id, created_at, updated_at, resolver,
+       client_key, assistant_key, title, archived_at, metadata_json
+FROM conversations
+WHERE conversation_id = ?
+""",
+                [conversation_id],
+            ).fetchone()
+        return dict(row) if row else None
 
     def insert_request_pending(
         self,
@@ -316,6 +416,35 @@ WHERE request_id = ?
             ).fetchone()
         return dict(row) if row else None
 
+    def list_requests(
+        self,
+        *,
+        conversation_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(limit, 100))
+        clauses: list[str] = []
+        params: list[Any] = []
+        if conversation_id:
+            clauses.append("conversation_id = ?")
+            params.append(conversation_id)
+        params.append(safe_limit)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+SELECT request_id, conversation_id, created_at, updated_at,
+       provider_key, model_id, status, http_status,
+       request_json, response_json, metadata_json, error_text
+FROM requests
+{where}
+ORDER BY created_at DESC
+LIMIT ?
+""",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def complete_request(
         self,
         *,
@@ -360,6 +489,8 @@ WHERE request_id = ?
         conversation_id: str,
         message_id: str,
         kind: str | None = None,
+        request_id: str | None = None,
+        token_usage: Mapping[str, Any] | None = None,
     ) -> int | None:
         if not content.strip():
             return None
@@ -372,9 +503,9 @@ WHERE request_id = ?
                 """
 INSERT OR IGNORE INTO messages(
   timestamp, role, content, conversation_title,
-  conversation_id, message_id, kind
+  conversation_id, message_id, kind, request_id, token_usage_json
 )
-VALUES(?, ?, ?, ?, ?, ?, ?)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 """,
                 [
                     timestamp,
@@ -384,6 +515,8 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
                     conversation_id,
                     message_id,
                     normalized_kind,
+                    request_id,
+                    _json(token_usage),
                 ],
             )
             row = conn.execute(
@@ -514,6 +647,113 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ],
             )
 
+    def list_summary_versions(
+        self,
+        *,
+        conversation_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(limit, 100))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+SELECT id, conversation_id, version, summary, created_at,
+       last_message_id, previous_last_message_id,
+       source_message_count, model_id, metadata_json
+FROM conversation_summary_versions
+WHERE conversation_id = ?
+ORDER BY version DESC
+LIMIT ?
+""",
+                [conversation_id, safe_limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def rollback_summary(
+        self,
+        *,
+        conversation_id: str,
+        target_version: int | None,
+        now: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            current = conn.execute(
+                """
+SELECT version, last_message_id
+FROM conversation_summaries
+WHERE conversation_id = ?
+""",
+                [conversation_id],
+            ).fetchone()
+            if current is None:
+                return None
+            current_version = int(current["version"])
+            if target_version is None:
+                target_version = current_version - 1
+            target = conn.execute(
+                """
+SELECT version, summary, last_message_id, source_message_count, model_id
+FROM conversation_summary_versions
+WHERE conversation_id = ? AND version = ?
+""",
+                [conversation_id, target_version],
+            ).fetchone()
+            if target is None:
+                return None
+            next_version = current_version + 1
+            conn.execute(
+                """
+UPDATE conversation_summaries
+SET summary = ?, updated_at = ?, version = ?,
+    last_message_id = ?, status = 'completed', error_text = NULL
+WHERE conversation_id = ?
+""",
+                [
+                    target["summary"],
+                    now,
+                    next_version,
+                    target["last_message_id"],
+                    conversation_id,
+                ],
+            )
+            conn.execute(
+                """
+INSERT INTO conversation_summary_versions(
+  conversation_id, version, summary, created_at,
+  last_message_id, previous_last_message_id,
+  source_message_count, model_id, metadata_json
+)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+""",
+                [
+                    conversation_id,
+                    next_version,
+                    target["summary"],
+                    now,
+                    target["last_message_id"],
+                    current["last_message_id"],
+                    target["source_message_count"],
+                    target["model_id"],
+                    _json(
+                        {
+                            "rollback": True,
+                            "rollback_from_version": current_version,
+                            "rollback_to_version": target_version,
+                        }
+                    ),
+                ],
+            )
+            row = conn.execute(
+                """
+SELECT conversation_id, summary, updated_at, version,
+       last_message_id, status, error_text
+FROM conversation_summaries
+WHERE conversation_id = ?
+""",
+                [conversation_id],
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_recent_messages(
         self,
         *,
@@ -530,7 +770,8 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-SELECT id, timestamp, role, content, conversation_title, kind
+SELECT id, timestamp, role, content, conversation_title, kind,
+       request_id, token_usage_json
 FROM messages
 WHERE {' AND '.join(clauses)}
 ORDER BY id DESC
@@ -571,7 +812,7 @@ LIMIT ?
             rows = conn.execute(
                 f"""
 SELECT id, timestamp, role, content, conversation_title,
-       conversation_id, message_id, kind
+       conversation_id, message_id, kind, request_id, token_usage_json
 FROM messages
 WHERE {' AND '.join(clauses)}
 ORDER BY id {order}
@@ -581,6 +822,44 @@ LIMIT ?
             ).fetchall()
         result = [dict(row) for row in rows]
         return list(reversed(result)) if reverse else result
+
+    def delete_message(
+        self,
+        *,
+        conversation_id: str,
+        message_id: int,
+    ) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+DELETE FROM messages
+WHERE conversation_id = ? AND id = ?
+""",
+                [conversation_id, message_id],
+            )
+            return cursor.rowcount > 0
+
+    def get_conversation_messages_through(
+        self,
+        *,
+        conversation_id: str,
+        through_id: int,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(limit, 1000))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+SELECT id, timestamp, role, content, conversation_title,
+       conversation_id, message_id, kind, request_id, token_usage_json
+FROM messages
+WHERE conversation_id = ? AND id <= ?
+ORDER BY id DESC
+LIMIT ?
+""",
+                [conversation_id, through_id, safe_limit],
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
 
     def get_messages_after(
         self,
@@ -598,7 +877,8 @@ LIMIT ?
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-SELECT id, timestamp, role, content, conversation_title, conversation_id, kind
+SELECT id, timestamp, role, content, conversation_title, conversation_id, kind,
+       request_id, token_usage_json
 FROM messages
 {where}
 ORDER BY id ASC

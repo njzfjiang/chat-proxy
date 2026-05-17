@@ -21,7 +21,13 @@ class ProxyConfig:
     port: int = 8787
     upstream_api_key: str | None = None
     chat_model: str = "deepseek-v4-flash"
+    chat_recent_k: int = 20
     provider_key: str | None = None
+    worldbook_enabled: bool = False
+    worldbook_path: Path | None = None
+    worldbook_paths: tuple[Path, ...] = ()
+    worldbook_max_items: int = 2
+    worldbook_chars_total: int = 800
     summary_enabled: bool = False
     summary_upstream_base: str | None = None
     summary_api_key: str | None = None
@@ -54,7 +60,17 @@ def load_config() -> ProxyConfig:
         or os.getenv("CHAT_PROXY_MODEL", "").strip()
         or "deepseek-v4-flash"
     )
+    chat_recent_k = int(os.getenv("CHAT_PROXY_CHAT_RECENT_K", "20"))
     provider_key = os.getenv("CHAT_PROXY_PROVIDER_KEY", "").strip()
+    worldbook_path_raw = os.getenv("CHAT_PROXY_WORLDBOOK_PATH", "").strip()
+    worldbook_paths_raw = os.getenv("CHAT_PROXY_WORLDBOOK_PATHS", "").strip()
+    worldbook_path = Path(worldbook_path_raw).expanduser() if worldbook_path_raw else None
+    worldbook_paths = _parse_path_list(worldbook_paths_raw)
+    if worldbook_path:
+        worldbook_paths = (worldbook_path, *worldbook_paths)
+    worldbook_enabled = _env_bool("CHAT_PROXY_WORLDBOOK_ENABLED") or bool(worldbook_paths)
+    worldbook_max_items = int(os.getenv("CHAT_PROXY_WORLDBOOK_MAX_ITEMS", "2"))
+    worldbook_chars_total = int(os.getenv("CHAT_PROXY_WORLDBOOK_CHARS_TOTAL", "800"))
     summary_enabled = os.getenv("CHAT_PROXY_SUMMARY_ENABLED", "").strip().lower() in {
         "1",
         "true",
@@ -97,7 +113,13 @@ def load_config() -> ProxyConfig:
         port=port,
         upstream_api_key=upstream_api_key or None,
         chat_model=chat_model,
+        chat_recent_k=chat_recent_k,
         provider_key=provider_key or None,
+        worldbook_enabled=worldbook_enabled,
+        worldbook_path=worldbook_path,
+        worldbook_paths=worldbook_paths,
+        worldbook_max_items=worldbook_max_items,
+        worldbook_chars_total=worldbook_chars_total,
         summary_enabled=summary_enabled,
         summary_upstream_base=summary_upstream.rstrip("/") or None,
         summary_api_key=summary_api_key or None,
@@ -150,3 +172,19 @@ def _env_bool(name: str) -> bool:
         "yes",
         "on",
     }
+
+
+def _parse_path_list(value: str) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for raw_item in re.split(r"[;\n]", value):
+        item = raw_item.strip().strip('"').strip("'")
+        if not item:
+            continue
+        path = Path(item).expanduser()
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return tuple(paths)

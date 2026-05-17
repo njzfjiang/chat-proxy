@@ -1,6 +1,7 @@
 from chat_proxy.parsing import (
     SseTextAccumulator,
     extract_chat_completion_text,
+    extract_token_usage,
     last_user_text,
     message_id_for,
     prepare_request_body_for_upstream,
@@ -203,6 +204,24 @@ def test_extract_chat_completion_text():
     )
 
 
+def test_extract_token_usage_from_response():
+    assert extract_token_usage(
+        {
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14,
+                "completion_tokens_details": {"reasoning_tokens": 2},
+            }
+        }
+    ) == {
+        "prompt_tokens": 10,
+        "completion_tokens": 4,
+        "total_tokens": 14,
+        "reasoning_tokens": 2,
+    }
+
+
 def test_message_id_is_stable():
     first = message_id_for(
         request_id="req-1",
@@ -227,3 +246,18 @@ def test_sse_accumulator_reads_openai_delta_text():
     acc.add_bytes(b"data: [DONE]\n\n")
 
     assert acc.text == "hello"
+
+
+def test_sse_accumulator_reads_usage():
+    acc = SseTextAccumulator()
+    acc.add_bytes(
+        b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        b'data: {"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}\n\n'
+    )
+
+    assert acc.text == "hi"
+    assert acc.usage == {
+        "prompt_tokens": 3,
+        "completion_tokens": 1,
+        "total_tokens": 4,
+    }

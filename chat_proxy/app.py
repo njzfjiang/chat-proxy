@@ -3,18 +3,21 @@ from __future__ import annotations
 import json
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import ProxyConfig, load_config
+from .context_builder import build_web_chat_context
 from .parsing import (
-    OPENAI_CHAT_COMPLETION_BODY_KEYS,
     SseTextAccumulator,
     extract_chat_completion_text,
+    extract_token_usage,
     last_user_text,
     message_id_for,
     prepare_request_body_for_upstream,
@@ -93,12 +96,34 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "memory_candidates": candidates,
         }
 
+    @app.get("/admin/requests")
+    def admin_requests(
+        conversation_id: str | None = None,
+        limit: int = 20,
+        include_payloads: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "requests": [
+                _request_payload(row, include_payloads=include_payloads)
+                for row in store.list_requests(
+                    conversation_id=conversation_id,
+                    limit=limit,
+                )
+            ]
+        }
+
     @app.get("/conversations")
-    def conversations(limit: int = 50) -> dict[str, Any]:
+    def conversations(
+        limit: int = 50,
+        include_archived: bool = False,
+    ) -> dict[str, Any]:
         return {
             "conversations": [
                 _conversation_payload(row)
-                for row in store.list_conversations(limit=limit)
+                for row in store.list_conversations(
+                    limit=limit,
+                    include_archived=include_archived,
+                )
             ]
         }
 
@@ -141,6 +166,87 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "title": title,
         }
 
+    @app.patch("/conversations/{conversation_id}")
+    async def update_conversation(conversation_id: str, request: Request):
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        title = _optional_body_str(body, "title") if "title" in body else None
+        archived = body.get("archived") if "archived" in body else None
+        if archived is not None and not isinstance(archived, bool):
+            return JSONResponse(
+                {"error": "archived must be a boolean."},
+                status_code=400,
+            )
+        row = store.update_conversation(
+            conversation_id=conversation_id,
+            now=_now(),
+            title=title,
+            archived=archived,
+        )
+        if row is None:
+            return JSONResponse({"error": "Conversation not found."}, status_code=404)
+        return {"conversation": _conversation_payload(row)}
+
+    @app.post("/conversations/{conversation_id}/branches")
+    async def branch_conversation(conversation_id: str, request: Request):
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        source_message_id = body.get("source_message_id")
+        if not isinstance(source_message_id, int):
+            return JSONResponse(
+                {"error": "source_message_id must be an integer."},
+                status_code=400,
+            )
+        now = _now()
+        branch_id = (
+            _optional_body_str(body, "conversation_id")
+            or f"conv_{uuid4().hex}"
+        )
+        source = store.get_conversation(conversation_id)
+        if source is None:
+            return JSONResponse({"error": "Conversation not found."}, status_code=404)
+        title = (
+            _optional_body_str(body, "title")
+            or f"{source.get('title') or source.get('assistant_key') or 'Conversation'} branch"
+        )
+        store.upsert_conversation(
+            conversation_id=branch_id,
+            now=now,
+            resolver="branch",
+            client_key=source.get("client_key"),
+            assistant_key=source.get("assistant_key"),
+            title=title,
+            metadata={
+                "source_conversation_id": conversation_id,
+                "source_message_id": source_message_id,
+            },
+        )
+        messages = store.get_conversation_messages_through(
+            conversation_id=conversation_id,
+            through_id=source_message_id,
+        )
+        if not messages:
+            return JSONResponse({"error": "Source message not found."}, status_code=404)
+        for message in messages:
+            store.insert_message(
+                timestamp=str(message.get("timestamp") or now),
+                role=str(message.get("role") or "user"),
+                content=str(message.get("content") or ""),
+                conversation_title=title,
+                conversation_id=branch_id,
+                message_id=f"branch:{branch_id}:{message.get('id')}",
+                kind=str(message.get("kind") or "chat"),
+            )
+        return {
+            "conversation_id": branch_id,
+            "source_conversation_id": conversation_id,
+            "source_message_id": source_message_id,
+            "copied_message_count": len(messages),
+            "title": title,
+        }
+
     @app.get("/conversations/{conversation_id}/messages")
     def conversation_messages(
         conversation_id: str,
@@ -158,7 +264,22 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         )
         return {
             "conversation_id": conversation_id,
-            "messages": messages,
+            "messages": [_message_payload(row) for row in messages],
+        }
+
+    @app.delete("/conversations/{conversation_id}/messages/{message_id}")
+    def delete_message(conversation_id: str, message_id: int) -> dict[str, Any]:
+        deleted = store.delete_message(
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        if not deleted:
+            return JSONResponse({"error": "Message not found."}, status_code=404)
+        store.touch_conversation(conversation_id=conversation_id, now=_now())
+        return {
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "deleted": True,
         }
 
     @app.get("/conversations/{conversation_id}/rolling-short")
@@ -166,6 +287,51 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         return {
             "conversation_id": conversation_id,
             "summary": store.get_summary(conversation_id),
+        }
+
+    @app.get("/conversations/{conversation_id}/rolling-short/versions")
+    def rolling_short_versions(
+        conversation_id: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        return {
+            "conversation_id": conversation_id,
+            "versions": [
+                _summary_version_payload(row)
+                for row in store.list_summary_versions(
+                    conversation_id=conversation_id,
+                    limit=limit,
+                )
+            ],
+        }
+
+    @app.post("/conversations/{conversation_id}/rolling-short/rollback")
+    async def rollback_rolling_short(conversation_id: str, request: Request):
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        raw_version = body.get("version")
+        version = None
+        if raw_version is not None:
+            if not isinstance(raw_version, int):
+                return JSONResponse(
+                    {"error": "version must be an integer."},
+                    status_code=400,
+                )
+            version = raw_version
+        summary = store.rollback_summary(
+            conversation_id=conversation_id,
+            target_version=version,
+            now=_now(),
+        )
+        if summary is None:
+            return JSONResponse(
+                {"error": "No summary version available to roll back to."},
+                status_code=404,
+            )
+        return {
+            "conversation_id": conversation_id,
+            "summary": summary,
         }
 
     @app.get("/daily-summaries")
@@ -193,11 +359,17 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         body = await _read_json_object(request)
         if isinstance(body, JSONResponse):
             return body
+        headers = _web_chat_headers(request.headers, body, cfg)
         try:
-            upstream_body = _web_chat_to_upstream_body(body, cfg)
+            context_result = build_web_chat_context(
+                body=body,
+                cfg=cfg,
+                store=store,
+                headers=headers,
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-        headers = _web_chat_headers(request.headers, body, cfg)
+        upstream_body = context_result.upstream_body
         body_text = json.dumps(upstream_body, ensure_ascii=False, sort_keys=True)
         return await _handle_chat_body(
             app=request.app,
@@ -207,12 +379,18 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             incoming_headers=headers,
             body=upstream_body,
             body_text=body_text,
+            webapp_mode=True,
+            context_snapshot=context_result.snapshot,
         )
 
     @app.post("/chat/completions")
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
         return await _handle_chat_completions(request, cfg, store)
+
+    web_dist = Path(__file__).resolve().parent.parent / "web" / "dist"
+    if web_dist.exists():
+        app.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
 
     return app
 
@@ -245,6 +423,8 @@ async def _handle_chat_completions(
         incoming_headers=dict(request.headers),
         body=body,
         body_text=body_text,
+        webapp_mode=False,
+        context_snapshot=None,
     )
 
 
@@ -257,6 +437,8 @@ async def _handle_chat_body(
     incoming_headers: dict[str, str],
     body: dict[str, Any],
     body_text: str,
+    webapp_mode: bool,
+    context_snapshot: dict[str, Any] | None,
 ):
     request_id = request_id_for(body_text, incoming_headers)
     duplicate = _duplicate_request_response(store, incoming_headers, request_id)
@@ -269,7 +451,14 @@ async def _handle_chat_body(
     upstream_body = inject_rolling_summary(prepared_body.body, summary_text)
     now = _now()
     model_id = str(upstream_body.get("model") or body.get("model") or "") or None
+    user_text = last_user_text(body)
     conversation_title = _conversation_title(identity)
+    if webapp_mode and user_text:
+        conversation_title = _auto_conversation_title(
+            current_title=conversation_title,
+            assistant_key=identity.assistant_key,
+            user_text=user_text,
+        )
 
     metadata = {
         "request_id": request_id,
@@ -277,6 +466,11 @@ async def _handle_chat_body(
         "conversation_metadata": identity.metadata or {},
         "upstream_body_mode": prepared_body.mode,
         "rolling_summary_injected": bool(summary_text and summary_text.strip()),
+        "injected_context_snapshot": _injected_context_snapshot(
+            context_snapshot=context_snapshot,
+            summary_row=summary_row,
+            final_body=upstream_body,
+        ),
         "stripped_metadata": prepared_body.stripped_metadata or {},
         "path": incoming_path,
     }
@@ -301,7 +495,6 @@ async def _handle_chat_body(
         metadata=metadata,
     )
 
-    user_text = last_user_text(body)
     if user_text:
         store.insert_message(
             timestamp=now,
@@ -315,6 +508,7 @@ async def _handle_chat_body(
                 role="user",
                 content=user_text,
             ),
+            request_id=request_id,
         )
 
     upstream_url = _upstream_url(cfg.upstream_base, incoming_path)
@@ -366,6 +560,7 @@ async def _handle_chat_body(
 
     if isinstance(response_payload, dict):
         assistant_text = extract_chat_completion_text(response_payload)
+        token_usage = extract_token_usage(response_payload)
         if assistant_text:
             store.insert_message(
                 timestamp=_now(),
@@ -379,6 +574,8 @@ async def _handle_chat_body(
                     role="assistant",
                     content=assistant_text,
                 ),
+                request_id=request_id,
+                token_usage=token_usage,
             )
             _schedule_summary_update(
                 app=app,
@@ -476,6 +673,8 @@ async def _stream_upstream(
                         role="assistant",
                         content=assistant_text,
                     ),
+                    request_id=request_id,
+                    token_usage=accumulator.usage,
                 )
                 _schedule_summary_update(
                     app=app,
@@ -510,33 +709,55 @@ async def _read_json_object(request: Request) -> dict[str, Any] | JSONResponse:
     return body
 
 
+def _injected_context_snapshot(
+    *,
+    context_snapshot: dict[str, Any] | None,
+    summary_row: dict[str, Any] | None,
+    final_body: dict[str, Any],
+) -> dict[str, Any]:
+    snapshot = dict(context_snapshot or {"source": "proxy", "components": []})
+    components = list(snapshot.get("components") or [])
+    summary_text = str(summary_row.get("summary") or "") if summary_row else ""
+    if summary_text.strip():
+        components.insert(
+            0,
+            {
+                "name": "rolling_short",
+                "message_count": 1,
+                "chars": len(summary_text),
+                "version": summary_row.get("version"),
+                "last_message_id": summary_row.get("last_message_id"),
+            },
+        )
+    snapshot["components"] = components
+    snapshot["rolling_short_injected"] = bool(summary_text.strip())
+    snapshot["final_message_count"] = len(final_body.get("messages") or [])
+    snapshot["final_chars"] = _message_list_chars(final_body.get("messages"))
+    return snapshot
+
+
+def _message_list_chars(messages: Any) -> int:
+    if not isinstance(messages, list):
+        return 0
+    total = 0
+    for message in messages:
+        if isinstance(message, dict):
+            total += len(str(message.get("content") or ""))
+    return total
+
+
 def _web_chat_to_upstream_body(
     body: dict[str, Any],
     cfg: ProxyConfig,
+    store: ChatProxyStore,
+    headers: dict[str, str],
 ) -> dict[str, Any]:
-    upstream = {
-        key: value
-        for key, value in body.items()
-        if key in OPENAI_CHAT_COMPLETION_BODY_KEYS
-    }
-    messages = body.get("messages")
-    user_text = str(body.get("user_text") or "").strip()
-    system_prompt = str(body.get("system_prompt") or "").strip()
-    if isinstance(messages, list):
-        upstream_messages = list(messages)
-    elif user_text:
-        upstream_messages = [{"role": "user", "content": user_text}]
-    else:
-        raise ValueError("POST /chat requires messages or user_text.")
-    if system_prompt:
-        upstream_messages = [
-            {"role": "system", "content": system_prompt},
-            *upstream_messages,
-        ]
-    upstream["messages"] = upstream_messages
-    if not str(upstream.get("model") or "").strip():
-        upstream["model"] = cfg.chat_model
-    return upstream
+    return build_web_chat_context(
+        body=body,
+        cfg=cfg,
+        store=store,
+        headers=headers,
+    ).upstream_body
 
 
 def _web_chat_headers(
@@ -572,6 +793,7 @@ def _conversation_payload(row: dict[str, Any]) -> dict[str, Any]:
         "client_id": row.get("client_key"),
         "assistant_key": row.get("assistant_key"),
         "title": row.get("title"),
+        "archived_at": row.get("archived_at"),
         "metadata": _decode_json(row.get("metadata_json")),
         "message_count": int(row.get("message_count") or 0),
         "last_message_id": row.get("last_message_id"),
@@ -581,6 +803,63 @@ def _conversation_payload(row: dict[str, Any]) -> dict[str, Any]:
         "rolling_summary": row.get("rolling_summary"),
         "rolling_summary_status": row.get("rolling_summary_status"),
         "rolling_summary_version": row.get("rolling_summary_version"),
+    }
+
+
+def _message_payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row)
+    payload["token_usage"] = _decode_json(payload.pop("token_usage_json", None))
+    return payload
+
+
+def _request_payload(
+    row: dict[str, Any],
+    *,
+    include_payloads: bool = False,
+) -> dict[str, Any]:
+    payload = {
+        "request_id": row.get("request_id"),
+        "conversation_id": row.get("conversation_id"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "provider_key": row.get("provider_key"),
+        "model_id": row.get("model_id"),
+        "status": row.get("status"),
+        "http_status": row.get("http_status"),
+        "metadata": _debug_metadata(_decode_json(row.get("metadata_json"))),
+        "error_text": row.get("error_text"),
+    }
+    if include_payloads:
+        payload["request"] = _decode_json(row.get("request_json"))
+        payload["response"] = _decode_json(row.get("response_json"))
+        payload["metadata"] = _decode_json(row.get("metadata_json"))
+    return payload
+
+
+def _summary_version_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "conversation_id": row.get("conversation_id"),
+        "version": row.get("version"),
+        "summary": row.get("summary"),
+        "created_at": row.get("created_at"),
+        "last_message_id": row.get("last_message_id"),
+        "previous_last_message_id": row.get("previous_last_message_id"),
+        "source_message_count": row.get("source_message_count"),
+        "model_id": row.get("model_id"),
+        "metadata": _decode_json(row.get("metadata_json")),
+    }
+
+
+def _debug_metadata(metadata: Any) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        "conversation_resolver": metadata.get("conversation_resolver"),
+        "upstream_body_mode": metadata.get("upstream_body_mode"),
+        "rolling_summary_injected": metadata.get("rolling_summary_injected"),
+        "injected_context_snapshot": metadata.get("injected_context_snapshot"),
+        "path": metadata.get("path"),
     }
 
 
@@ -699,6 +978,20 @@ def _conversation_title(identity) -> str | None:
         or identity.metadata.get("assistant")
         or identity.metadata.get("assistant_key")
     )
+
+
+def _auto_conversation_title(
+    *,
+    current_title: str | None,
+    assistant_key: str | None,
+    user_text: str,
+) -> str | None:
+    if current_title and current_title.strip() and current_title != assistant_key:
+        return current_title
+    cleaned = " ".join(user_text.split())
+    if not cleaned:
+        return current_title or assistant_key
+    return cleaned[:48]
 
 
 def _now() -> str:

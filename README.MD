@@ -10,13 +10,29 @@ existing KMLog SQLite FTS database.
 $env:CHAT_PROXY_UPSTREAM_BASE="https://api.openai.com/v1"
 $env:CHAT_PROXY_UPSTREAM_API_KEY="..."
 $env:CHAT_PROXY_CHAT_MODEL="gpt-4.1-mini"
+$env:CHAT_PROXY_CHAT_RECENT_K="20"
 $env:CHAT_PROXY_PROVIDER_KEY="openai"
+$env:CHAT_PROXY_WORLDBOOK_PATHS="C:\Users\ellat\Documents\KM-backup\Kai-Mei-Memory-Vault\7-WorldBook\AI_triggered_expansion_pack_v1.json;C:\Users\ellat\Documents\KM-backup\Kai-Mei-Memory-Vault\7-WorldBook\长期记忆系统.json"
 $env:CHAT_PROXY_DB="C:\Users\ellat\Desktop\K_Space\kmlog-search\chat_data\chat_search.db"
 python -m chat_proxy.main
 ```
 
 The proxy automatically loads `.env` from the current working directory before
 reading config. Set `CHAT_PROXY_ENV_FILE` to use a different env file.
+
+To serve the web UI from the same FastAPI process, build it first:
+
+```powershell
+cd web
+npm install
+npm run build
+cd ..
+python -m chat_proxy.main
+```
+
+Then open `http://127.0.0.1:8787`. During frontend development, run
+`npm run dev` in `web/` and use `http://127.0.0.1:5173`; Vite proxies API calls
+to `127.0.0.1:8787`.
 
 Kelivo provider settings:
 
@@ -54,6 +70,20 @@ The model, provider API key, and default provider key belong on the backend via
 `provider_key` as explicit overrides, but they should never store provider API
 keys. `system_prompt` is inserted only into the current upstream request.
 
+When clients send `user_text`, the proxy builds the upstream short-context
+window from SQLite instead of trusting the browser's current view. It prepends up
+to `CHAT_PROXY_CHAT_RECENT_K` recent `chat` messages from the same
+`conversation_id`, then appends the new user message. This lets mobile/web/dev
+clients share canonical context even if one client has not loaded every recent
+turn.
+
+If `CHAT_PROXY_WORLDBOOK_PATHS` or legacy `CHAT_PROXY_WORLDBOOK_PATH` is set,
+`/chat` also scans the current request and recent context for matching
+worldbook keywords. Separate multiple paths with semicolons. Matching entries
+are inserted as a system context block before recent turns. Tune this with
+`CHAT_PROXY_WORLDBOOK_ENABLED`, `CHAT_PROXY_WORLDBOOK_MAX_ITEMS`, and
+`CHAT_PROXY_WORLDBOOK_CHARS_TOTAL`.
+
 Explicit `request_id` values are idempotent: a completed duplicate replays the
 stored response, while an unfinished duplicate returns `409`.
 
@@ -64,10 +94,30 @@ POST /conversations
 GET /conversations?limit=50
 GET /conversations/{conversation_id}/messages?limit=50&before_id=123
 GET /conversations/{conversation_id}/messages?after_id=123
+DELETE /conversations/{conversation_id}/messages/{message_id}
 GET /conversations/{conversation_id}/rolling-short
+GET /conversations/{conversation_id}/rolling-short/versions
+POST /conversations/{conversation_id}/rolling-short/rollback
 GET /daily-summaries?date_key=2026-05-16
 GET /daily-summaries?limit=30
 ```
+
+Debug the final context composition for recent requests:
+
+```text
+GET /admin/requests?limit=20
+GET /admin/requests?conversation_id=conversation-uuid
+```
+
+Look at `metadata.injected_context_snapshot` to see which components were
+injected, including rolling summary, worldbook snippets, recent turn ids, and
+character counts. Full request/response payloads and raw metadata are hidden by
+default; add `include_payloads=true` only when you need to inspect them.
+
+Message reads include `token_usage` when the upstream provider returns it. The
+web UI falls back to a local estimate when true usage is unavailable. For
+streaming requests, the web UI sends `stream_options.include_usage=true`; support
+depends on the selected OpenAI-compatible provider.
 
 The OpenAI-compatible endpoints still support the same identity via headers:
 
