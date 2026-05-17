@@ -4,6 +4,7 @@ import json
 import asyncio
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, Request
@@ -11,6 +12,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .config import ProxyConfig, load_config
 from .parsing import (
+    OPENAI_CHAT_COMPLETION_BODY_KEYS,
     SseTextAccumulator,
     extract_chat_completion_text,
     last_user_text,
@@ -37,6 +39,7 @@ HOP_BY_HOP_HEADERS = {
     "host",
     "content-length",
     "accept-encoding",
+    "content-encoding",
 }
 
 
@@ -90,6 +93,122 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "memory_candidates": candidates,
         }
 
+    @app.get("/conversations")
+    def conversations(limit: int = 50) -> dict[str, Any]:
+        return {
+            "conversations": [
+                _conversation_payload(row)
+                for row in store.list_conversations(limit=limit)
+            ]
+        }
+
+    @app.post("/conversations")
+    async def create_conversation(request: Request):
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        now = _now()
+        conversation_id = (
+            str(body.get("conversation_id") or "").strip()
+            or f"conv_{uuid4().hex}"
+        )
+        client_id = _optional_body_str(body, "client_id")
+        assistant_key = _optional_body_str(body, "assistant_key")
+        provider_key = _optional_body_str(body, "provider_key")
+        title = _optional_body_str(body, "title") or assistant_key
+        metadata = {
+            "conversation_id": conversation_id,
+            "client_key": client_id,
+            "assistant_key": assistant_key,
+            "provider_key": provider_key,
+            "mode_hint": _optional_body_str(body, "mode_hint"),
+        }
+        store.upsert_conversation(
+            conversation_id=conversation_id,
+            now=now,
+            resolver="webapp",
+            client_key=client_id,
+            assistant_key=assistant_key,
+            title=title,
+            metadata=metadata,
+        )
+        return {
+            "conversation_id": conversation_id,
+            "created_at": now,
+            "client_id": client_id,
+            "assistant_key": assistant_key,
+            "provider_key": provider_key,
+            "title": title,
+        }
+
+    @app.get("/conversations/{conversation_id}/messages")
+    def conversation_messages(
+        conversation_id: str,
+        limit: int = 50,
+        before_id: int | None = None,
+        after_id: int | None = None,
+        kind: str | None = None,
+    ) -> dict[str, Any]:
+        messages = store.get_conversation_messages(
+            conversation_id=conversation_id,
+            limit=limit,
+            before_id=before_id,
+            after_id=after_id,
+            kind=kind,
+        )
+        return {
+            "conversation_id": conversation_id,
+            "messages": messages,
+        }
+
+    @app.get("/conversations/{conversation_id}/rolling-short")
+    def rolling_short(conversation_id: str) -> dict[str, Any]:
+        return {
+            "conversation_id": conversation_id,
+            "summary": store.get_summary(conversation_id),
+        }
+
+    @app.get("/daily-summaries")
+    def daily_summaries(
+        date_key: str | None = None,
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        if date_key:
+            row = store.get_daily_summary(date_key)
+            candidates = []
+            if row:
+                candidates = store.get_daily_memory_candidates(
+                    date_key=date_key,
+                    summary_version=int(row["version"]),
+                )
+            return {
+                "date_key": date_key,
+                "summary": row,
+                "memory_candidates": candidates,
+            }
+        return {"summaries": store.list_daily_summaries(limit=limit)}
+
+    @app.post("/chat")
+    async def chat(request: Request):
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        try:
+            upstream_body = _web_chat_to_upstream_body(body, cfg)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        headers = _web_chat_headers(request.headers, body, cfg)
+        body_text = json.dumps(upstream_body, ensure_ascii=False, sort_keys=True)
+        return await _handle_chat_body(
+            app=request.app,
+            cfg=cfg,
+            store=store,
+            incoming_path="/chat/completions",
+            incoming_headers=headers,
+            body=upstream_body,
+            body_text=body_text,
+        )
+
     @app.post("/chat/completions")
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
@@ -118,8 +237,31 @@ async def _handle_chat_completions(
             status_code=400,
         )
 
-    incoming_headers = dict(request.headers)
+    return await _handle_chat_body(
+        app=request.app,
+        cfg=cfg,
+        store=store,
+        incoming_path=str(request.url.path),
+        incoming_headers=dict(request.headers),
+        body=body,
+        body_text=body_text,
+    )
+
+
+async def _handle_chat_body(
+    *,
+    app: FastAPI,
+    cfg: ProxyConfig,
+    store: ChatProxyStore,
+    incoming_path: str,
+    incoming_headers: dict[str, str],
+    body: dict[str, Any],
+    body_text: str,
+):
     request_id = request_id_for(body_text, incoming_headers)
+    duplicate = _duplicate_request_response(store, incoming_headers, request_id)
+    if duplicate is not None:
+        return duplicate
     identity = resolve_conversation(incoming_headers, body)
     prepared_body = prepare_request_body_for_upstream(incoming_headers, body)
     summary_row = store.get_summary(identity.conversation_id)
@@ -136,7 +278,7 @@ async def _handle_chat_completions(
         "upstream_body_mode": prepared_body.mode,
         "rolling_summary_injected": bool(summary_text and summary_text.strip()),
         "stripped_metadata": prepared_body.stripped_metadata or {},
-        "path": str(request.url.path),
+        "path": incoming_path,
     }
 
     store.upsert_conversation(
@@ -175,12 +317,12 @@ async def _handle_chat_completions(
             ),
         )
 
-    upstream_url = _upstream_url(cfg.upstream_base, request.url.path)
-    headers = _forward_headers(incoming_headers)
+    upstream_url = _upstream_url(cfg.upstream_base, incoming_path)
+    headers = _forward_headers(incoming_headers, cfg)
 
     if upstream_body.get("stream") is True:
         return await _stream_upstream(
-            app=request.app,
+            app=app,
             cfg=cfg,
             store=store,
             request_id=request_id,
@@ -239,7 +381,7 @@ async def _handle_chat_completions(
                 ),
             )
             _schedule_summary_update(
-                app=request.app,
+                app=app,
                 cfg=cfg,
                 store=store,
                 conversation_id=identity.conversation_id,
@@ -350,6 +492,172 @@ async def _stream_upstream(
     )
 
 
+async def _read_json_object(request: Request) -> dict[str, Any] | JSONResponse:
+    body_bytes = await request.body()
+    body_text = body_bytes.decode("utf-8", errors="replace")
+    try:
+        body = json.loads(body_text) if body_text.strip() else {}
+    except json.JSONDecodeError as exc:
+        return JSONResponse(
+            {"error": f"Request body must be a JSON object: {exc}"},
+            status_code=400,
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"error": "Request body must be a JSON object."},
+            status_code=400,
+        )
+    return body
+
+
+def _web_chat_to_upstream_body(
+    body: dict[str, Any],
+    cfg: ProxyConfig,
+) -> dict[str, Any]:
+    upstream = {
+        key: value
+        for key, value in body.items()
+        if key in OPENAI_CHAT_COMPLETION_BODY_KEYS
+    }
+    messages = body.get("messages")
+    user_text = str(body.get("user_text") or "").strip()
+    system_prompt = str(body.get("system_prompt") or "").strip()
+    if isinstance(messages, list):
+        upstream_messages = list(messages)
+    elif user_text:
+        upstream_messages = [{"role": "user", "content": user_text}]
+    else:
+        raise ValueError("POST /chat requires messages or user_text.")
+    if system_prompt:
+        upstream_messages = [
+            {"role": "system", "content": system_prompt},
+            *upstream_messages,
+        ]
+    upstream["messages"] = upstream_messages
+    if not str(upstream.get("model") or "").strip():
+        upstream["model"] = cfg.chat_model
+    return upstream
+
+
+def _web_chat_headers(
+    headers: Any,
+    body: dict[str, Any],
+    cfg: ProxyConfig,
+) -> dict[str, str]:
+    out = dict(headers)
+    header_map = {
+        "client_id": "X-Kelivo-Client-Id",
+        "conversation_id": "X-Kelivo-Conversation-Id",
+        "request_id": "X-Kelivo-Request-Id",
+        "assistant_key": "X-Kelivo-Assistant-Key",
+        "provider_key": "X-Kelivo-Provider-Key",
+    }
+    for body_key, header_key in header_map.items():
+        value = _optional_body_str(body, body_key)
+        if value:
+            out[header_key] = value
+    if "X-Kelivo-Provider-Key" not in out and cfg.provider_key:
+        out["X-Kelivo-Provider-Key"] = cfg.provider_key
+    out.setdefault("content-type", "application/json")
+    return out
+
+
+def _conversation_payload(row: dict[str, Any]) -> dict[str, Any]:
+    content = str(row.get("last_message_content") or "")
+    return {
+        "conversation_id": row.get("conversation_id"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "resolver": row.get("resolver"),
+        "client_id": row.get("client_key"),
+        "assistant_key": row.get("assistant_key"),
+        "title": row.get("title"),
+        "metadata": _decode_json(row.get("metadata_json")),
+        "message_count": int(row.get("message_count") or 0),
+        "last_message_id": row.get("last_message_id"),
+        "last_message_at": row.get("last_message_at"),
+        "last_message_role": row.get("last_message_role"),
+        "last_message_preview": content[:240],
+        "rolling_summary": row.get("rolling_summary"),
+        "rolling_summary_status": row.get("rolling_summary_status"),
+        "rolling_summary_version": row.get("rolling_summary_version"),
+    }
+
+
+def _optional_body_str(body: dict[str, Any], key: str) -> str | None:
+    value = body.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _decode_json(value: Any) -> Any:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return None
+
+
+def _duplicate_request_response(
+    store: ChatProxyStore,
+    headers: dict[str, str],
+    request_id: str,
+) -> Response | None:
+    if not _has_explicit_request_id(headers):
+        return None
+    existing = store.get_request(request_id)
+    if not existing:
+        return None
+    status = str(existing.get("status") or "")
+    if status != "completed":
+        return JSONResponse(
+            {
+                "error": "duplicate request is still pending or failed",
+                "request_id": request_id,
+                "status": status,
+            },
+            status_code=409,
+        )
+    payload = _decode_json(existing.get("response_json"))
+    http_status = int(existing.get("http_status") or 200)
+    response_headers = _decode_json(existing.get("response_headers_json"))
+    headers_out = (
+        _plain_headers(response_headers)
+        if isinstance(response_headers, dict)
+        else {}
+    )
+    if isinstance(payload, (dict, list)):
+        return JSONResponse(
+            content=payload,
+            status_code=http_status,
+            headers=headers_out,
+        )
+    return Response(
+        content="" if payload is None else str(payload),
+        status_code=http_status,
+        headers=headers_out,
+    )
+
+
+def _has_explicit_request_id(headers: dict[str, str]) -> bool:
+    lowered = {key.lower(): value for key, value in headers.items()}
+    return bool(
+        (
+            lowered.get("x-request-id")
+            or lowered.get("x-kelivo-request-id")
+            or lowered.get("request-id")
+            or ""
+        ).strip()
+    )
+
+
+def _plain_headers(headers: dict[str, Any]) -> dict[str, str]:
+    return {str(key): str(value) for key, value in headers.items()}
+
+
 def _upstream_url(upstream_base: str, incoming_path: str) -> str:
     path = incoming_path
     if path.startswith("/v1/"):
@@ -359,13 +667,17 @@ def _upstream_url(upstream_base: str, incoming_path: str) -> str:
     return f"{upstream_base.rstrip('/')}{path}"
 
 
-def _forward_headers(headers: dict[str, str]) -> dict[str, str]:
+def _forward_headers(headers: dict[str, str], cfg: ProxyConfig) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in headers.items():
         if key.lower() in HOP_BY_HOP_HEADERS:
             continue
         out[key] = value
     out.setdefault("content-type", "application/json")
+    if cfg.upstream_api_key and not any(
+        key.lower() == "authorization" for key in out
+    ):
+        out["authorization"] = f"Bearer {cfg.upstream_api_key}"
     return out
 
 

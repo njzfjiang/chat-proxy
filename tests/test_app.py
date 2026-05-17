@@ -699,3 +699,138 @@ FROM daily_memory_candidates
         "candidate",
     )
     assert conversation_count == 0
+
+
+@pytest.mark.anyio
+async def test_web_chat_endpoint_uses_explicit_identity_and_exposes_history(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    captured_body = {}
+    captured_headers = {}
+
+    async def completions(request: Request):
+        captured_body.update(await request.json())
+        captured_headers.update(dict(request.headers))
+        return JSONResponse(
+            {
+                "id": "cmpl-test",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "web answer"}}
+                ],
+            }
+        )
+
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            upstream_api_key="backend-secret",
+            chat_model="backend-chat-model",
+            provider_key="deepseek",
+        )
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat",
+            json={
+                "client_id": "phone-1",
+                "conversation_id": "mobile-chat",
+                "request_id": "req-mobile-1",
+                "assistant_key": "kai",
+                "system_prompt": "Reply gently.",
+                "user_text": "hello mobile",
+            },
+        )
+        conversations = await client.get("/conversations")
+        messages = await client.get("/conversations/mobile-chat/messages")
+        rolling = await client.get("/conversations/mobile-chat/rolling-short")
+
+    assert resp.status_code == 200
+    assert captured_body == {
+        "model": "backend-chat-model",
+        "messages": [
+            {"role": "system", "content": "Reply gently."},
+            {"role": "user", "content": "hello mobile"},
+        ],
+    }
+    assert captured_headers["authorization"] == "Bearer backend-secret"
+    assert conversations.json()["conversations"][0]["conversation_id"] == "mobile-chat"
+    assert conversations.json()["conversations"][0]["client_id"] == "phone-1"
+    assert [row["role"] for row in messages.json()["messages"]] == [
+        "user",
+        "assistant",
+    ]
+    assert messages.json()["messages"][0]["content"] == "hello mobile"
+    assert rolling.json() == {"conversation_id": "mobile-chat", "summary": None}
+
+
+@pytest.mark.anyio
+async def test_web_chat_replays_completed_explicit_request_id(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    call_count = 0
+
+    async def completions(_request: Request):
+        nonlocal call_count
+        call_count += 1
+        return JSONResponse(
+            {
+                "id": "cmpl-test",
+                "choices": [
+                    {"message": {"role": "assistant", "content": f"answer {call_count}"}}
+                ],
+            }
+        )
+
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+    payload = {
+        "client_id": "phone-1",
+        "conversation_id": "mobile-chat",
+        "request_id": "req-mobile-1",
+        "model": "gpt-test",
+        "user_text": "hello mobile",
+    }
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        first = await client.post("/chat", json=payload)
+        second = await client.post("/chat", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json() == second.json()
+    assert call_count == 1

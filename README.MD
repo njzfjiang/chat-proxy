@@ -8,6 +8,9 @@ existing KMLog SQLite FTS database.
 
 ```powershell
 $env:CHAT_PROXY_UPSTREAM_BASE="https://api.openai.com/v1"
+$env:CHAT_PROXY_UPSTREAM_API_KEY="..."
+$env:CHAT_PROXY_CHAT_MODEL="gpt-4.1-mini"
+$env:CHAT_PROXY_PROVIDER_KEY="openai"
 $env:CHAT_PROXY_DB="C:\Users\ellat\Desktop\K_Space\kmlog-search\chat_data\chat_search.db"
 python -m chat_proxy.main
 ```
@@ -21,6 +24,60 @@ Kelivo provider settings:
 - Chat Path: `/chat/completions`
 
 The proxy also accepts `/v1/chat/completions`.
+
+## Webapp API
+
+For browser/mobile clients, use the proxy as the only backend. The client should
+persist `client_id` and `conversation_id`, generate a fresh `request_id` per
+send attempt, and let the proxy handle storage, summaries, candidates, and
+future retrieval.
+
+```http
+POST /chat
+```
+
+```json
+{
+  "client_id": "phone-uuid",
+  "conversation_id": "conversation-uuid",
+  "request_id": "request-uuid",
+  "assistant_key": "kai",
+  "system_prompt": "Optional per-request instruction.",
+  "user_text": "hello"
+}
+```
+
+`POST /chat` also accepts OpenAI-compatible `messages` instead of `user_text`.
+The model, provider API key, and default provider key belong on the backend via
+`CHAT_PROXY_CHAT_MODEL`, `CHAT_PROXY_UPSTREAM_API_KEY`, and
+`CHAT_PROXY_PROVIDER_KEY`. Browser/mobile clients may pass `model` or
+`provider_key` as explicit overrides, but they should never store provider API
+keys. `system_prompt` is inserted only into the current upstream request.
+
+Explicit `request_id` values are idempotent: a completed duplicate replays the
+stored response, while an unfinished duplicate returns `409`.
+
+Conversation and summary reads:
+
+```text
+POST /conversations
+GET /conversations?limit=50
+GET /conversations/{conversation_id}/messages?limit=50&before_id=123
+GET /conversations/{conversation_id}/messages?after_id=123
+GET /conversations/{conversation_id}/rolling-short
+GET /daily-summaries?date_key=2026-05-16
+GET /daily-summaries?limit=30
+```
+
+The OpenAI-compatible endpoints still support the same identity via headers:
+
+```text
+X-Kelivo-Client-Id
+X-Kelivo-Conversation-Id
+X-Kelivo-Request-Id
+X-Kelivo-Assistant-Key
+X-Kelivo-Provider-Key
+```
 
 ## Rolling Summary
 

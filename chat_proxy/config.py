@@ -19,6 +19,9 @@ class ProxyConfig:
     db_path: Path
     host: str = "127.0.0.1"
     port: int = 8787
+    upstream_api_key: str | None = None
+    chat_model: str = "deepseek-v4-flash"
+    provider_key: str | None = None
     summary_enabled: bool = False
     summary_upstream_base: str | None = None
     summary_api_key: str | None = None
@@ -42,6 +45,16 @@ def load_config() -> ProxyConfig:
     db_path = Path(os.getenv("CHAT_PROXY_DB", str(DEFAULT_DB_PATH))).expanduser()
     host = os.getenv("CHAT_PROXY_HOST", "127.0.0.1").strip() or "127.0.0.1"
     port = int(os.getenv("CHAT_PROXY_PORT", "8787"))
+    upstream_api_key = (
+        os.getenv("CHAT_PROXY_UPSTREAM_API_KEY", "").strip()
+        or os.getenv("CHAT_PROXY_API_KEY", "").strip()
+    )
+    chat_model = (
+        os.getenv("CHAT_PROXY_CHAT_MODEL", "").strip()
+        or os.getenv("CHAT_PROXY_MODEL", "").strip()
+        or "deepseek-v4-flash"
+    )
+    provider_key = os.getenv("CHAT_PROXY_PROVIDER_KEY", "").strip()
     summary_enabled = os.getenv("CHAT_PROXY_SUMMARY_ENABLED", "").strip().lower() in {
         "1",
         "true",
@@ -82,6 +95,9 @@ def load_config() -> ProxyConfig:
         db_path=db_path,
         host=host,
         port=port,
+        upstream_api_key=upstream_api_key or None,
+        chat_model=chat_model,
+        provider_key=provider_key or None,
         summary_enabled=summary_enabled,
         summary_upstream_base=summary_upstream.rstrip("/") or None,
         summary_api_key=summary_api_key or None,

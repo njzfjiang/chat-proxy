@@ -7,6 +7,9 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
         "\n".join(
             [
                 "CHAT_PROXY_UPSTREAM_BASE=https://from-env-file.example/v1",
+                "CHAT_PROXY_UPSTREAM_API_KEY='chat-key'",
+                "CHAT_PROXY_CHAT_MODEL=chat-model",
+                "CHAT_PROXY_PROVIDER_KEY=deepseek",
                 "CHAT_PROXY_SUMMARY_ENABLED=true",
                 "CHAT_PROXY_SUMMARY_MODEL='deepseek-v4-flash'",
                 "CHAT_PROXY_SUMMARY_API_KEY=\"abc#123\"",
@@ -20,6 +23,9 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     monkeypatch.setenv("CHAT_PROXY_ENV_FILE", str(env_file))
     monkeypatch.setenv("CHAT_PROXY_UPSTREAM_BASE", "https://real-env.example/v1")
     monkeypatch.delenv("CHAT_PROXY_SUMMARY_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_UPSTREAM_API_KEY", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_CHAT_MODEL", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_PROVIDER_KEY", raising=False)
     monkeypatch.delenv("CHAT_PROXY_SUMMARY_MODEL", raising=False)
     monkeypatch.delenv("CHAT_PROXY_SUMMARY_API_KEY", raising=False)
     monkeypatch.delenv("CHAT_PROXY_DAILY_SUMMARY_ENABLED", raising=False)
@@ -29,6 +35,9 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     cfg = load_config()
 
     assert cfg.upstream_base == "https://real-env.example/v1"
+    assert cfg.upstream_api_key == "chat-key"
+    assert cfg.chat_model == "chat-model"
+    assert cfg.provider_key == "deepseek"
     assert cfg.summary_enabled is True
     assert cfg.summary_model == "deepseek-v4-flash"
     assert cfg.summary_api_key == "abc#123"

@@ -221,6 +221,51 @@ ON CONFLICT(conversation_id) DO UPDATE SET
                 ],
             )
 
+    def list_conversations(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(limit, 200))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+SELECT
+  c.conversation_id,
+  c.created_at,
+  c.updated_at,
+  c.resolver,
+  c.client_key,
+  c.assistant_key,
+  c.title,
+  c.metadata_json,
+  COUNT(m.id) AS message_count,
+  MAX(m.id) AS last_message_id,
+  MAX(m.timestamp) AS last_message_at,
+  (
+    SELECT m2.role
+    FROM messages m2
+    WHERE m2.conversation_id = c.conversation_id
+    ORDER BY m2.id DESC
+    LIMIT 1
+  ) AS last_message_role,
+  (
+    SELECT m2.content
+    FROM messages m2
+    WHERE m2.conversation_id = c.conversation_id
+    ORDER BY m2.id DESC
+    LIMIT 1
+  ) AS last_message_content,
+  s.summary AS rolling_summary,
+  s.status AS rolling_summary_status,
+  s.version AS rolling_summary_version
+FROM conversations c
+LEFT JOIN messages m ON m.conversation_id = c.conversation_id
+LEFT JOIN conversation_summaries s ON s.conversation_id = c.conversation_id
+GROUP BY c.conversation_id
+ORDER BY COALESCE(MAX(m.timestamp), c.updated_at) DESC, c.updated_at DESC
+LIMIT ?
+""",
+                [safe_limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def insert_request_pending(
         self,
         *,
@@ -255,6 +300,21 @@ VALUES(?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
                     _json(metadata),
                 ],
             )
+
+    def get_request(self, request_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+SELECT request_id, conversation_id, created_at, updated_at,
+       provider_key, model_id, status, http_status,
+       request_headers_json, response_headers_json, request_json,
+       response_json, metadata_json, error_text
+FROM requests
+WHERE request_id = ?
+""",
+                [request_id],
+            ).fetchone()
+        return dict(row) if row else None
 
     def complete_request(
         self,
@@ -480,6 +540,48 @@ LIMIT ?
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
+    def get_conversation_messages(
+        self,
+        *,
+        conversation_id: str,
+        limit: int = 50,
+        before_id: int | None = None,
+        after_id: int | None = None,
+        kind: str | None = None,
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(limit, 500))
+        clauses = ["conversation_id = ?"]
+        params: list[Any] = [conversation_id]
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if after_id is not None:
+            clauses.append("id > ?")
+            params.append(after_id)
+            order = "ASC"
+            reverse = False
+        else:
+            if before_id is not None:
+                clauses.append("id < ?")
+                params.append(before_id)
+            order = "DESC"
+            reverse = True
+        params.append(safe_limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+SELECT id, timestamp, role, content, conversation_title,
+       conversation_id, message_id, kind
+FROM messages
+WHERE {' AND '.join(clauses)}
+ORDER BY id {order}
+LIMIT ?
+""",
+                params,
+            ).fetchall()
+        result = [dict(row) for row in rows]
+        return list(reversed(result)) if reverse else result
+
     def get_messages_after(
         self,
         *,
@@ -518,6 +620,21 @@ WHERE date_key = ?
                 [date_key],
             ).fetchone()
             return dict(row) if row else None
+
+    def list_daily_summaries(self, *, limit: int = 30) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(limit, 365))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+SELECT date_key, summary, updated_at, version,
+       last_message_id, status, error_text
+FROM daily_summaries
+ORDER BY date_key DESC
+LIMIT ?
+""",
+                [safe_limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_daily_memory_candidates(
         self,
