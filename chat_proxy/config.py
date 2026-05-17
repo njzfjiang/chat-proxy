@@ -24,6 +24,12 @@ class ProxyConfig:
     summary_api_key: str | None = None
     summary_model: str = "deepseek-v4-flash"
     summary_recent_k: int = 30
+    daily_summary_enabled: bool = False
+    daily_summary_upstream_base: str | None = None
+    daily_summary_api_key: str | None = None
+    daily_summary_model: str = "deepseek-v4-flash"
+    daily_summary_recent_k: int = 200
+    daily_summary_timezone: str = "America/Toronto"
 
 
 def load_config() -> ProxyConfig:
@@ -49,6 +55,27 @@ def load_config() -> ProxyConfig:
         or "deepseek-v4-flash"
     )
     summary_recent_k = int(os.getenv("CHAT_PROXY_SUMMARY_RECENT_K", "30"))
+    daily_summary_enabled = _env_bool("CHAT_PROXY_DAILY_SUMMARY_ENABLED")
+    daily_summary_upstream = (
+        os.getenv("CHAT_PROXY_DAILY_SUMMARY_UPSTREAM_BASE", "").strip()
+        or summary_upstream
+    )
+    daily_summary_api_key = (
+        os.getenv("CHAT_PROXY_DAILY_SUMMARY_API_KEY", "").strip()
+        or summary_api_key
+    )
+    daily_summary_model = (
+        os.getenv("CHAT_PROXY_DAILY_SUMMARY_MODEL", "").strip()
+        or summary_model
+        or "deepseek-v4-flash"
+    )
+    daily_summary_recent_k = int(
+        os.getenv("CHAT_PROXY_DAILY_SUMMARY_RECENT_K", "200")
+    )
+    daily_summary_timezone = (
+        os.getenv("CHAT_PROXY_DAILY_SUMMARY_TIMEZONE", "America/Toronto").strip()
+        or "America/Toronto"
+    )
 
     return ProxyConfig(
         upstream_base=upstream.rstrip("/"),
@@ -60,6 +87,12 @@ def load_config() -> ProxyConfig:
         summary_api_key=summary_api_key or None,
         summary_model=summary_model,
         summary_recent_k=summary_recent_k,
+        daily_summary_enabled=daily_summary_enabled,
+        daily_summary_upstream_base=daily_summary_upstream.rstrip("/") or None,
+        daily_summary_api_key=daily_summary_api_key or None,
+        daily_summary_model=daily_summary_model,
+        daily_summary_recent_k=daily_summary_recent_k,
+        daily_summary_timezone=daily_summary_timezone,
     )
 
 
@@ -92,3 +125,12 @@ def _parse_env_value(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         value = value[1:-1]
     return value
+
+
+def _env_bool(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }

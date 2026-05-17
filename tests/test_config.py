@@ -10,6 +10,8 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
                 "CHAT_PROXY_SUMMARY_ENABLED=true",
                 "CHAT_PROXY_SUMMARY_MODEL='deepseek-v4-flash'",
                 "CHAT_PROXY_SUMMARY_API_KEY=\"abc#123\"",
+                "CHAT_PROXY_DAILY_SUMMARY_ENABLED=true",
+                "CHAT_PROXY_DAILY_SUMMARY_RECENT_K=125",
                 "CHAT_PROXY_PORT=9999 # inline comment",
             ]
         ),
@@ -20,6 +22,8 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     monkeypatch.delenv("CHAT_PROXY_SUMMARY_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_SUMMARY_MODEL", raising=False)
     monkeypatch.delenv("CHAT_PROXY_SUMMARY_API_KEY", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_DAILY_SUMMARY_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_DAILY_SUMMARY_RECENT_K", raising=False)
     monkeypatch.delenv("CHAT_PROXY_PORT", raising=False)
 
     cfg = load_config()
@@ -28,6 +32,11 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     assert cfg.summary_enabled is True
     assert cfg.summary_model == "deepseek-v4-flash"
     assert cfg.summary_api_key == "abc#123"
+    assert cfg.daily_summary_enabled is True
+    assert cfg.daily_summary_upstream_base is None
+    assert cfg.daily_summary_api_key == "abc#123"
+    assert cfg.daily_summary_model == "deepseek-v4-flash"
+    assert cfg.daily_summary_recent_k == 125
     assert cfg.port == 9999
 
 

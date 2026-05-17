@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 
+from .message_kind import classify_message_kind, normalize_message_kind
+
 
 class ChatProxyStore:
     def __init__(self, db_path: Path | str) -> None:
@@ -78,6 +80,48 @@ CREATE TABLE IF NOT EXISTS conversation_summary_versions (
   UNIQUE(conversation_id, version)
 );
 
+CREATE TABLE IF NOT EXISTS daily_summaries (
+  date_key TEXT PRIMARY KEY,
+  summary TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  last_message_id INTEGER,
+  status TEXT,
+  error_text TEXT
+);
+
+CREATE TABLE IF NOT EXISTS daily_summary_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date_key TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  summary TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_message_id INTEGER,
+  previous_last_message_id INTEGER,
+  source_message_count INTEGER,
+  model_id TEXT,
+  metadata_json TEXT,
+  UNIQUE(date_key, version)
+);
+
+CREATE TABLE IF NOT EXISTS daily_memory_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date_key TEXT NOT NULL,
+  summary_version INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  evidence TEXT,
+  domain TEXT NOT NULL,
+  function TEXT NOT NULL,
+  primary_mother TEXT NOT NULL,
+  secondary_mother TEXT,
+  importance INTEGER,
+  confidence TEXT,
+  source_message_ids_json TEXT,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  metadata_json TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_requests_conversation_created
   ON requests(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
@@ -91,6 +135,14 @@ CREATE INDEX IF NOT EXISTS idx_conversation_summary_versions_conversation_create
   ON conversation_summary_versions(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_summary_versions_last_message
   ON conversation_summary_versions(last_message_id);
+CREATE INDEX IF NOT EXISTS idx_daily_summaries_updated_at
+  ON daily_summaries(updated_at);
+CREATE INDEX IF NOT EXISTS idx_daily_summary_versions_date_version
+  ON daily_summary_versions(date_key, version);
+CREATE INDEX IF NOT EXISTS idx_daily_memory_candidates_date_version
+  ON daily_memory_candidates(date_key, summary_version);
+CREATE INDEX IF NOT EXISTS idx_daily_memory_candidates_status
+  ON daily_memory_candidates(status);
 
 CREATE INDEX IF NOT EXISTS messages_timestamp_idx ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS messages_role_idx ON messages(role);
@@ -233,10 +285,14 @@ WHERE request_id = ?
         conversation_title: str | None,
         conversation_id: str,
         message_id: str,
-        kind: str = "chat",
+        kind: str | None = None,
     ) -> int | None:
         if not content.strip():
             return None
+        normalized_kind = normalize_message_kind(kind) or classify_message_kind(
+            content=content,
+            conversation_title=conversation_title,
+        )
         with self.connect() as conn:
             conn.execute(
                 """
@@ -253,7 +309,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
                     conversation_title,
                     conversation_id,
                     message_id,
-                    kind,
+                    normalized_kind,
                 ],
             )
             row = conn.execute(
@@ -410,8 +466,236 @@ LIMIT ?
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
+    def get_messages_after(
+        self,
+        *,
+        limit: int = 200,
+        after_message_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if after_message_id is not None:
+            clauses.append("id > ?")
+            params.append(after_message_id)
+        params.append(limit)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+SELECT id, timestamp, role, content, conversation_title, conversation_id, kind
+FROM messages
+{where}
+ORDER BY id ASC
+LIMIT ?
+""",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_daily_summary(self, date_key: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+SELECT date_key, summary, updated_at, version,
+       last_message_id, status, error_text
+FROM daily_summaries
+WHERE date_key = ?
+""",
+                [date_key],
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_daily_memory_candidates(
+        self,
+        *,
+        date_key: str,
+        summary_version: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["date_key = ?"]
+        params: list[Any] = [date_key]
+        if summary_version is not None:
+            clauses.append("summary_version = ?")
+            params.append(summary_version)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+SELECT id, date_key, summary_version, label, evidence, domain,
+       function, primary_mother, secondary_mother, importance,
+       confidence, source_message_ids_json, status, metadata_json,
+       created_at
+FROM daily_memory_candidates
+WHERE {' AND '.join(clauses)}
+ORDER BY id
+""",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_daily_summary(self, date_key: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "DELETE FROM daily_memory_candidates WHERE date_key = ?",
+                [date_key],
+            )
+            conn.execute(
+                "DELETE FROM daily_summary_versions WHERE date_key = ?",
+                [date_key],
+            )
+            conn.execute(
+                "DELETE FROM daily_summaries WHERE date_key = ?",
+                [date_key],
+            )
+
+    def mark_daily_summary_pending(self, *, date_key: str, now: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+INSERT INTO daily_summaries(
+  date_key, summary, updated_at, version,
+  last_message_id, status, error_text
+)
+VALUES(?, '', ?, 0, NULL, 'pending', NULL)
+ON CONFLICT(date_key) DO UPDATE SET
+  updated_at = excluded.updated_at,
+  status = 'pending',
+  error_text = NULL
+""",
+                [date_key, now],
+            )
+
+    def mark_daily_summary_error(
+        self,
+        *,
+        date_key: str,
+        now: str,
+        error_text: str,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+INSERT INTO daily_summaries(
+  date_key, summary, updated_at, version,
+  last_message_id, status, error_text
+)
+VALUES(?, '', ?, 0, NULL, 'error', ?)
+ON CONFLICT(date_key) DO UPDATE SET
+  updated_at = excluded.updated_at,
+  status = 'error',
+  error_text = excluded.error_text
+""",
+                [date_key, now, error_text],
+            )
+
+    def upsert_daily_summary(
+        self,
+        *,
+        date_key: str,
+        summary: str,
+        last_message_id: int | None,
+        updated_at: str,
+        candidates: list[Mapping[str, Any]] | None = None,
+        source_message_count: int | None = None,
+        model_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> int:
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+SELECT version, last_message_id
+FROM daily_summaries
+WHERE date_key = ?
+""",
+                [date_key],
+            ).fetchone()
+            next_version = int(existing["version"]) + 1 if existing else 1
+            previous_last_message_id = (
+                existing["last_message_id"] if existing else None
+            )
+            conn.execute(
+                """
+INSERT INTO daily_summaries(
+  date_key, summary, updated_at, version,
+  last_message_id, status, error_text
+)
+VALUES(?, ?, ?, ?, ?, 'completed', NULL)
+ON CONFLICT(date_key) DO UPDATE SET
+  summary = excluded.summary,
+  updated_at = excluded.updated_at,
+  version = excluded.version,
+  last_message_id = excluded.last_message_id,
+  status = 'completed',
+  error_text = NULL
+""",
+                [date_key, summary, updated_at, next_version, last_message_id],
+            )
+            conn.execute(
+                """
+INSERT INTO daily_summary_versions(
+  date_key, version, summary, created_at,
+  last_message_id, previous_last_message_id,
+  source_message_count, model_id, metadata_json
+)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+""",
+                [
+                    date_key,
+                    next_version,
+                    summary,
+                    updated_at,
+                    last_message_id,
+                    previous_last_message_id,
+                    source_message_count,
+                    model_id,
+                    _json(metadata),
+                ],
+            )
+            for candidate in candidates or []:
+                conn.execute(
+                    """
+INSERT INTO daily_memory_candidates(
+  date_key, summary_version, label, evidence, domain,
+  function, primary_mother, secondary_mother, importance,
+  confidence, source_message_ids_json, status, metadata_json,
+  created_at
+)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?)
+""",
+                    [
+                        date_key,
+                        next_version,
+                        str(candidate.get("label") or "Untitled candidate"),
+                        str(candidate.get("evidence") or ""),
+                        str(candidate.get("domain") or "everyday_slice"),
+                        str(candidate.get("function") or "daily_context"),
+                        str(candidate.get("primary_mother") or "E"),
+                        _optional_str(candidate.get("secondary_mother")),
+                        _optional_int(candidate.get("importance")),
+                        _optional_str(candidate.get("confidence")),
+                        _json(candidate.get("source_message_ids") or []),
+                        _json(candidate.get("metadata")),
+                        updated_at,
+                    ],
+                )
+        return next_version
+
 
 def _json(value: Any) -> str | None:
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

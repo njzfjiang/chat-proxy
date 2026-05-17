@@ -21,6 +21,7 @@ from .parsing import (
     sanitize_headers,
 )
 from .storage import ChatProxyStore
+from .daily_summary import date_key_for, update_daily_summary
 from .summary import inject_rolling_summary, update_conversation_summary
 
 
@@ -48,6 +49,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     app.state.config = cfg
     app.state.store = store
     app.state.summary_tasks = set()
+    app.state.daily_summary_tasks = set()
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
@@ -55,6 +57,37 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "ok": True,
             "upstream_base": cfg.upstream_base,
             "db_path": str(cfg.db_path),
+        }
+
+    @app.get("/admin/daily-summary/{date_key}")
+    def daily_summary(date_key: str) -> dict[str, Any]:
+        row = store.get_daily_summary(date_key)
+        candidates = []
+        if row:
+            candidates = store.get_daily_memory_candidates(
+                date_key=date_key,
+                summary_version=int(row["version"]),
+            )
+        return {
+            "date_key": date_key,
+            "summary": row,
+            "memory_candidates": candidates,
+        }
+
+    @app.get("/admin/daily-summary")
+    def today_daily_summary() -> dict[str, Any]:
+        date_key = date_key_for(_now(), cfg.daily_summary_timezone)
+        row = store.get_daily_summary(date_key)
+        candidates = []
+        if row:
+            candidates = store.get_daily_memory_candidates(
+                date_key=date_key,
+                summary_version=int(row["version"]),
+            )
+        return {
+            "date_key": date_key,
+            "summary": row,
+            "memory_candidates": candidates,
         }
 
     @app.post("/chat/completions")
@@ -368,6 +401,7 @@ def _schedule_summary_update(
     conversation_id: str,
 ) -> None:
     if not cfg.summary_enabled:
+        _schedule_daily_summary_update(app=app, cfg=cfg, store=store)
         return
     task = asyncio.create_task(
         update_conversation_summary(
@@ -379,3 +413,23 @@ def _schedule_summary_update(
     )
     app.state.summary_tasks.add(task)
     task.add_done_callback(app.state.summary_tasks.discard)
+    _schedule_daily_summary_update(app=app, cfg=cfg, store=store)
+
+
+def _schedule_daily_summary_update(
+    *,
+    app: FastAPI,
+    cfg: ProxyConfig,
+    store: ChatProxyStore,
+) -> None:
+    if not cfg.daily_summary_enabled:
+        return
+    task = asyncio.create_task(
+        update_daily_summary(
+            cfg=cfg,
+            store=store,
+            now=_now(),
+        )
+    )
+    app.state.daily_summary_tasks.add(task)
+    task.add_done_callback(app.state.daily_summary_tasks.discard)

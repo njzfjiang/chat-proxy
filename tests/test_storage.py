@@ -183,3 +183,147 @@ ORDER BY version
         after_message_id=first_id,
     )
     assert [row["content"] for row in after_first] == ["second"]
+
+
+def test_storage_auto_classifies_inserted_message_kind(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    store = ChatProxyStore(db_path)
+    store.initialize()
+    store.insert_message(
+        timestamp="2026-05-08T00:00:01Z",
+        role="assistant",
+        content="HttpException: HTTP 404:",
+        conversation_title="kai",
+        conversation_id="chat-1",
+        message_id="msg-noise",
+    )
+    store.insert_message(
+        timestamp="2026-05-08T00:00:02Z",
+        role="assistant",
+        content="HttpException: HTTP 404:",
+        conversation_title="kai",
+        conversation_id="chat-1",
+        message_id="msg-explicit-chat",
+        kind="chat",
+    )
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT message_id, kind FROM messages ORDER BY id"
+    ).fetchall()
+    conn.close()
+
+    assert rows == [("msg-noise", "noise"), ("msg-explicit-chat", "chat")]
+
+
+def test_storage_upserts_daily_summary_and_candidates(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    store = ChatProxyStore(db_path)
+    store.initialize()
+    first_id = store.insert_message(
+        timestamp="2026-05-16T12:00:00+00:00",
+        role="user",
+        content="first daily note",
+        conversation_title="kai",
+        conversation_id="chat-1",
+        message_id="msg-1",
+    )
+    second_id = store.insert_message(
+        timestamp="2026-05-16T12:01:00+00:00",
+        role="assistant",
+        content="second daily note",
+        conversation_title="kai",
+        conversation_id="chat-1",
+        message_id="msg-2",
+    )
+
+    version = store.upsert_daily_summary(
+        date_key="2026-05-16",
+        summary="Day overview\n- Built daily summaries.",
+        last_message_id=second_id,
+        updated_at="2026-05-16T12:02:00+00:00",
+        candidates=[
+            {
+                "label": "Daily summary module",
+                "evidence": "Implemented auditable candidates.",
+                "domain": "infra_asset",
+                "function": "infra_reference",
+                "primary_mother": "D",
+                "secondary_mother": "E",
+                "importance": 3,
+                "confidence": "medium",
+                "source_message_ids": [first_id, second_id],
+            }
+        ],
+        source_message_count=2,
+        model_id="summary-model",
+    )
+
+    summary = store.get_daily_summary("2026-05-16")
+    candidates = store.get_daily_memory_candidates(
+        date_key="2026-05-16",
+        summary_version=version,
+    )
+    after_first = store.get_messages_after(limit=30, after_message_id=first_id)
+
+    assert summary["summary"].startswith("Day overview")
+    assert summary["version"] == 1
+    assert summary["last_message_id"] == second_id
+    assert candidates[0]["label"] == "Daily summary module"
+    assert candidates[0]["domain"] == "infra_asset"
+    assert candidates[0]["status"] == "candidate"
+    assert candidates[0]["source_message_ids_json"] == f"[{first_id}, {second_id}]"
+    assert [row["content"] for row in after_first] == ["second daily note"]
+
+
+def test_storage_deletes_daily_summary_history_and_candidates(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    store = ChatProxyStore(db_path)
+    store.initialize()
+    message_id = store.insert_message(
+        timestamp="2026-05-16T12:00:00+00:00",
+        role="user",
+        content="first daily note",
+        conversation_title="kai",
+        conversation_id="chat-1",
+        message_id="msg-1",
+    )
+    store.upsert_daily_summary(
+        date_key="2026-05-16",
+        summary="Day overview\n- Built daily summaries.",
+        last_message_id=message_id,
+        updated_at="2026-05-16T12:02:00+00:00",
+        candidates=[
+            {
+                "label": "Daily summary module",
+                "evidence": "Implemented auditable candidates.",
+                "domain": "infra_asset",
+                "function": "infra_reference",
+                "primary_mother": "D",
+            }
+        ],
+    )
+
+    store.delete_daily_summary("2026-05-16")
+
+    conn = sqlite3.connect(db_path)
+    summary_count = conn.execute("SELECT COUNT(*) FROM daily_summaries").fetchone()[0]
+    version_count = conn.execute(
+        "SELECT COUNT(*) FROM daily_summary_versions"
+    ).fetchone()[0]
+    candidate_count = conn.execute(
+        "SELECT COUNT(*) FROM daily_memory_candidates"
+    ).fetchone()[0]
+    message_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    conn.close()
+
+    assert summary_count == 0
+    assert version_count == 0
+    assert candidate_count == 0
+    assert message_count == 1

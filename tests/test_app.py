@@ -42,6 +42,9 @@ async def _wait_summary_tasks(app):
     tasks = list(app.state.summary_tasks)
     if tasks:
         await asyncio.gather(*tasks)
+    daily_tasks = list(app.state.daily_summary_tasks)
+    if daily_tasks:
+        await asyncio.gather(*daily_tasks)
 
 
 @pytest.fixture
@@ -575,3 +578,123 @@ async def test_proxy_updates_summary_after_stream_response(
 
     assert assistant == "hello"
     assert summary == ("stream summary", "completed")
+
+
+@pytest.mark.anyio
+async def test_proxy_updates_daily_summary_without_conversation_summary(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    daily_body = {}
+
+    async def completions(_request: Request):
+        return JSONResponse(
+            {
+                "id": "cmpl-test",
+                "choices": [{"message": {"role": "assistant", "content": "answer"}}],
+            }
+        )
+
+    async def daily_completions(request: Request):
+        daily_body.update(await request.json())
+        return JSONResponse(
+            {
+                "id": "daily-test",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "summary": "Day overview\n- Talked about memory audit.",
+                                    "memory_candidates": [
+                                        {
+                                            "label": "Memory audit first",
+                                            "evidence": "The user said candidates should be audited.",
+                                            "domain": "rule",
+                                            "function": "daily_context",
+                                            "primary_mother": "F",
+                                            "secondary_mother": "E",
+                                            "importance": 3,
+                                            "confidence": "high",
+                                            "source_message_ids": [1, 2],
+                                        }
+                                    ],
+                                }
+                            ),
+                        }
+                    }
+                ],
+            }
+        )
+
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+    upstream_app.post("/daily/chat/completions")(daily_completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            daily_summary_enabled=True,
+            daily_summary_upstream_base="http://upstream/daily",
+        )
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat/completions",
+            headers={"X-Kelivo-Conversation-Id": "chat-1"},
+            json={
+                "model": "gpt-test",
+                "messages": [{"role": "user", "content": "audit memory first"}],
+            },
+        )
+        await _wait_summary_tasks(app)
+        admin = await client.get("/admin/daily-summary")
+
+    assert resp.status_code == 200
+    assert daily_body["model"] == "deepseek-v4-flash"
+    assert "audit memory first" in daily_body["messages"][1]["content"]
+    assert "answer" in daily_body["messages"][1]["content"]
+    assert admin.status_code == 200
+    assert admin.json()["summary"]["status"] == "completed"
+    assert admin.json()["memory_candidates"][0]["label"] == "Memory audit first"
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT summary, version, status FROM daily_summaries"
+    ).fetchone()
+    candidate = conn.execute(
+        """
+SELECT label, domain, function, primary_mother, status
+FROM daily_memory_candidates
+"""
+    ).fetchone()
+    conversation_count = conn.execute(
+        "SELECT COUNT(*) FROM conversation_summaries"
+    ).fetchone()[0]
+    conn.close()
+
+    assert row == ("Day overview\n- Talked about memory audit.", 1, "completed")
+    assert candidate == (
+        "Memory audit first",
+        "rule",
+        "daily_context",
+        "F",
+        "candidate",
+    )
+    assert conversation_count == 0
