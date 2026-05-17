@@ -34,6 +34,17 @@ Then open `http://127.0.0.1:8787`. During frontend development, run
 `npm run dev` in `web/` and use `http://127.0.0.1:5173`; Vite proxies API calls
 to `127.0.0.1:8787`.
 
+If the UI must live under a subpath such as `/chat/`, build it with a matching
+asset base and API prefix:
+
+```bash
+cd web
+VITE_BASE_PATH=/chat/ VITE_API_BASE=/chat/api npm run build
+```
+
+For nginx, serve `/chat/` from `web/dist` and proxy `/chat/api/` to the FastAPI
+root path.
+
 Kelivo provider settings:
 
 - Base URL: `http://127.0.0.1:8787`

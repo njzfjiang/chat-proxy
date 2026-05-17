@@ -88,6 +88,7 @@ const MODEL_KEY = "chatProxyWeb.model";
 const ASSISTANT_KEY = "chatProxyWeb.assistantKey";
 const PROVIDER_KEY = "chatProxyWeb.providerKey";
 const SYSTEM_PROMPT_KEY = "chatProxyWeb.systemPrompt";
+const API_BASE = normalizeApiBase(import.meta.env.VITE_API_BASE);
 
 export function App() {
   const [clientId] = useState(() => persistedId(CLIENT_KEY, "client"));
@@ -848,7 +849,7 @@ export function App() {
 }
 
 async function requestJson<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(apiPath(path), {
     ...init,
     headers: {
       "content-type": "application/json",
@@ -870,7 +871,7 @@ async function streamChat({
   payload: Record<string, unknown>;
   onText: (text: string) => void;
 }) {
-  const response = await fetch("/chat", {
+  const response = await fetch(apiPath("/chat"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -906,6 +907,22 @@ async function streamChat({
       onText(chunk);
     }
   }
+}
+
+function apiPath(path: string) {
+  if (/^https?:\/\//.test(path)) {
+    return path;
+  }
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${API_BASE}${normalizedPath}`;
+}
+
+function normalizeApiBase(value: unknown) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw || raw === "/") {
+    return "";
+  }
+  return raw.endsWith("/") ? raw.slice(0, -1) : raw;
 }
 
 function parseSseLine(line: string) {
