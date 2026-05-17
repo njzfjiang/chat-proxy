@@ -111,6 +111,10 @@ export function App() {
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [dailyRunning, setDailyRunning] = useState(false);
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyDaysAgo, setDailyDaysAgo] = useState(0);
+  const [dailyForce, setDailyForce] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -230,6 +234,47 @@ export function App() {
       );
     } catch {
       setDaily(null);
+    }
+  }
+
+  async function loadDailyByDaysAgo() {
+    if (dailyLoading) {
+      return;
+    }
+    setDailyLoading(true);
+    setError(null);
+    try {
+      setDaily(
+        await requestJson<DailySummary>(
+          `/daily-summaries?days_ago=${encodeURIComponent(String(dailyDaysAgo))}`
+        )
+      );
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setDailyLoading(false);
+    }
+  }
+
+  async function runDailySummary() {
+    if (dailyRunning) {
+      return;
+    }
+    setDailyRunning(true);
+    setError(null);
+    try {
+      const data = await requestJson<DailySummary>("/daily-summaries/run", {
+        method: "POST",
+        body: JSON.stringify({
+          days_ago: dailyDaysAgo,
+          force: dailyForce
+        })
+      });
+      setDaily(data);
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setDailyRunning(false);
     }
   }
 
@@ -739,7 +784,47 @@ export function App() {
             <section className="summary-panel">
               <div className="panel-head">
                 <CalendarDays size={17} />
-                <h3>{todayKey}</h3>
+                <h3>{daily?.date_key || todayKey}</h3>
+              </div>
+              <div className="daily-runner">
+                <label>
+                  <span>Days ago</span>
+                  <input
+                    min={0}
+                    max={365}
+                    type="number"
+                    value={dailyDaysAgo}
+                    onChange={(event) =>
+                      setDailyDaysAgo(Math.max(0, Number(event.target.value) || 0))
+                    }
+                  />
+                </label>
+                <label className="inline-check">
+                  <input
+                    checked={dailyForce}
+                    onChange={(event) => setDailyForce(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span>Force</span>
+                </label>
+                <button
+                  className="panel-action"
+                  disabled={dailyLoading}
+                  onClick={() => void loadDailyByDaysAgo()}
+                  type="button"
+                >
+                  {dailyLoading ? <Loader2 size={14} className="spin" /> : <CalendarDays size={14} />}
+                  <span>Load</span>
+                </button>
+                <button
+                  className="panel-action"
+                  disabled={dailyRunning}
+                  onClick={() => void runDailySummary()}
+                  type="button"
+                >
+                  {dailyRunning ? <Loader2 size={14} className="spin" /> : <RefreshCcw size={14} />}
+                  <span>Run</span>
+                </button>
               </div>
               <div className="summary-text">
                 <MarkdownText text={daily?.summary?.summary || "No daily summary yet."} />

@@ -99,7 +99,9 @@ GET /conversations/{conversation_id}/rolling-short
 GET /conversations/{conversation_id}/rolling-short/versions
 POST /conversations/{conversation_id}/rolling-short/rollback
 GET /daily-summaries?date_key=2026-05-16
+GET /daily-summaries?days_ago=1
 GET /daily-summaries?limit=30
+POST /daily-summaries/run
 ```
 
 Debug the final context composition for recent requests:
@@ -178,6 +180,20 @@ To manually test an older local day without waiting for the scheduled update:
 ```powershell
 python -m chat_proxy.manual_daily_summary --date 2026-05-15
 ```
+
+Or run it from HTTP / the web UI:
+
+```json
+POST /daily-summaries/run
+{
+  "days_ago": 1,
+  "force": false
+}
+```
+
+Use `"date_key": "2026-05-15"` instead of `days_ago` when you need an exact
+local date. `force: true` deletes that day's generated summary first and then
+rebuilds it.
 
 The job is incremental. To rerun the whole day from existing messages during
 testing, reset that day's generated summary first:

@@ -586,6 +586,59 @@ h3 {
   opacity: 0.45;
 }
 
+.daily-runner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.daily-runner label {
+  display: grid;
+  gap: 4px;
+  color: #62706b;
+  font-size: 0.76rem;
+  font-weight: 740;
+}
+
+.daily-runner input[type="number"] {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #cbd5d0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #182021;
+  padding: 7px 8px;
+  outline: none;
+}
+
+.daily-runner .inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+}
+
+.panel-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 32px;
+  border: 1px solid #cbd5d0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #273735;
+  padding: 0 9px;
+  font-size: 0.78rem;
+  font-weight: 740;
+}
+
+.panel-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .settings-panel label {
   display: grid;
   gap: 5px;

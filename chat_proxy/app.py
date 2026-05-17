@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -337,8 +337,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     @app.get("/daily-summaries")
     def daily_summaries(
         date_key: str | None = None,
+        days_ago: int | None = None,
         limit: int = 30,
     ) -> dict[str, Any]:
+        if days_ago is not None:
+            try:
+                date_key = _date_key_for_days_ago(days_ago, cfg)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
         if date_key:
             row = store.get_daily_summary(date_key)
             candidates = []
@@ -353,6 +359,44 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "memory_candidates": candidates,
             }
         return {"summaries": store.list_daily_summaries(limit=limit)}
+
+    @app.post("/daily-summaries/run")
+    async def run_daily_summary(request: Request):
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        try:
+            date_key = _daily_run_date_key(body, cfg)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        force = body.get("force") is True
+        scan_limit = body.get("scan_limit")
+        if scan_limit is not None and not isinstance(scan_limit, int):
+            return JSONResponse(
+                {"error": "scan_limit must be an integer."},
+                status_code=400,
+            )
+        if force:
+            store.delete_daily_summary(date_key)
+        now = _local_noon(date_key, cfg.daily_summary_timezone)
+        await update_daily_summary(
+            cfg=cfg,
+            store=store,
+            now=now,
+            scan_limit=scan_limit or 100000,
+        )
+        row = store.get_daily_summary(date_key)
+        candidates = []
+        if row:
+            candidates = store.get_daily_memory_candidates(
+                date_key=date_key,
+                summary_version=int(row["version"]),
+            )
+        return {
+            "date_key": date_key,
+            "summary": row,
+            "memory_candidates": candidates,
+        }
 
     @app.post("/chat")
     async def chat(request: Request):
@@ -992,6 +1036,44 @@ def _auto_conversation_title(
     if not cleaned:
         return current_title or assistant_key
     return cleaned[:48]
+
+
+def _daily_run_date_key(body: dict[str, Any], cfg: ProxyConfig) -> str:
+    raw_date = _optional_body_str(body, "date_key")
+    if raw_date:
+        try:
+            return datetime.strptime(raw_date, "%Y-%m-%d").date().isoformat()
+        except ValueError as exc:
+            raise ValueError("date_key must be formatted as YYYY-MM-DD.") from exc
+    raw_days_ago = body.get("days_ago", 0)
+    if not isinstance(raw_days_ago, int):
+        raise ValueError("days_ago must be an integer.")
+    return _date_key_for_days_ago(raw_days_ago, cfg)
+
+
+def _date_key_for_days_ago(days_ago: int, cfg: ProxyConfig) -> str:
+    if days_ago < 0 or days_ago > 365:
+        raise ValueError("days_ago must be between 0 and 365.")
+    tz = _zoneinfo(cfg.daily_summary_timezone)
+    target = datetime.now(tz).date() - timedelta(days=days_ago)
+    return target.isoformat()
+
+
+def _local_noon(date_key: str, timezone_name: str) -> str:
+    tz = _zoneinfo(timezone_name)
+    return datetime.strptime(date_key, "%Y-%m-%d").replace(
+        hour=12,
+        tzinfo=tz,
+    ).isoformat()
+
+
+def _zoneinfo(timezone_name: str):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("America/Toronto")
 
 
 def _now() -> str:

@@ -1,6 +1,7 @@
 import json
 import asyncio
 import sqlite3
+from datetime import datetime
 
 import httpx
 import pytest
@@ -705,6 +706,108 @@ FROM daily_memory_candidates
         "candidate",
     )
     assert conversation_count == 0
+
+
+@pytest.mark.anyio
+async def test_manual_daily_summary_run_endpoint_backfills_date(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    daily_body = {}
+
+    async def daily_completions(request: Request):
+        daily_body.update(await request.json())
+        return JSONResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "Day overview\n- Manual run worked.",
+                                    "memory_candidates": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(daily_completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            daily_summary_enabled=True,
+            daily_summary_upstream_base="http://upstream",
+            daily_summary_timezone="America/Toronto",
+        )
+    )
+    app.state.store.insert_message(
+        timestamp="2026-05-15T16:00:00+00:00",
+        role="user",
+        content="manual daily note",
+        conversation_title="kai",
+        conversation_id="chat-1",
+        message_id="manual-daily-1",
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/daily-summaries/run",
+            json={"date_key": "2026-05-15", "force": True},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["date_key"] == "2026-05-15"
+    assert resp.json()["summary"]["summary"].startswith("Day overview")
+    assert "manual daily note" in daily_body["messages"][1]["content"]
+
+
+@pytest.mark.anyio
+async def test_daily_summary_can_be_read_by_days_ago(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            daily_summary_timezone="America/Toronto",
+        )
+    )
+    today = datetime.now().date().isoformat()
+    app.state.store.upsert_daily_summary(
+        date_key=today,
+        summary="Today summary",
+        last_message_id=None,
+        updated_at="2026-05-17T00:00:00Z",
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.get("/daily-summaries?days_ago=0")
+
+    assert resp.status_code == 200
+    assert resp.json()["date_key"] == today
+    assert resp.json()["summary"]["summary"] == "Today summary"
 
 
 @pytest.mark.anyio
