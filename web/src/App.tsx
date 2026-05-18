@@ -2,8 +2,10 @@ import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "reac
 import {
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
   Edit3,
   Copy,
+  FileSearch,
   GitBranch,
   Loader2,
   Menu,
@@ -38,6 +40,7 @@ type ChatMessage = {
   content: string;
   conversation_id: string;
   kind: string | null;
+  request_id?: string | null;
   token_usage?: TokenUsage | null;
 };
 
@@ -82,6 +85,43 @@ type RollingVersion = {
   created_at: string;
 };
 
+type TraceComponent = {
+  name?: string;
+  message_count?: number;
+  chars?: number;
+  version?: number;
+  last_message_id?: number;
+  message_ids?: number[];
+  items?: Array<Record<string, unknown>>;
+};
+
+type TraceSnapshot = {
+  source?: string;
+  components?: TraceComponent[];
+  final_message_count?: number;
+  final_chars?: number;
+  rolling_short_injected?: boolean;
+};
+
+type RequestTrace = {
+  request_id: string;
+  conversation_id: string;
+  created_at: string;
+  updated_at: string;
+  provider_key: string | null;
+  model_id: string | null;
+  status: string;
+  http_status: number | null;
+  metadata: {
+    conversation_resolver?: string | null;
+    upstream_body_mode?: string | null;
+    rolling_summary_injected?: boolean | null;
+    injected_context_snapshot?: TraceSnapshot | null;
+    path?: string | null;
+  };
+  error_text: string | null;
+};
+
 const CLIENT_KEY = "chatProxyWeb.clientId";
 const CONVERSATION_KEY = "chatProxyWeb.conversationId";
 const MODEL_KEY = "chatProxyWeb.model";
@@ -120,6 +160,12 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
+  const [trace, setTrace] = useState<RequestTrace | null>(null);
+  const [traceLoading, setTraceLoading] = useState(false);
+  const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({
+    daily: true,
+    rolling: true
+  });
   const [failedSend, setFailedSend] = useState<{
     conversationId: string;
     text: string;
@@ -524,6 +570,32 @@ export function App() {
     window.setTimeout(() => setCopiedMessageId(null), 1200);
   }
 
+  async function inspectMessageTrace(message: ChatMessage) {
+    if (!message.request_id) {
+      return;
+    }
+    setInspectorOpen(true);
+    setTraceLoading(true);
+    setError(null);
+    try {
+      const data = await requestJson<{ requests: RequestTrace[] }>(
+        `/admin/requests?request_id=${encodeURIComponent(message.request_id)}&limit=1`
+      );
+      setTrace(data.requests[0] || null);
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setTraceLoading(false);
+    }
+  }
+
+  function togglePanel(panel: string) {
+    setCollapsedPanels((current) => ({
+      ...current,
+      [panel]: !current[panel]
+    }));
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
@@ -690,6 +762,16 @@ export function App() {
                         <Copy size={14} />
                         <span>Copy</span>
                       </button>
+                      {message.request_id && (
+                        <button
+                          aria-label="Inspect request trace"
+                          onClick={() => void inspectMessageTrace(message)}
+                          type="button"
+                        >
+                          <FileSearch size={14} />
+                          <span>Debug</span>
+                        </button>
+                      )}
                       <button
                         aria-label="Delete message"
                         className="danger-tool"
@@ -727,46 +809,83 @@ export function App() {
           </div>
 
           <aside className={`inspector ${inspectorOpen ? "open" : ""}`}>
-            <section className="settings-panel">
+            <section className={`settings-panel ${collapsedPanels.route ? "collapsed" : ""}`}>
               <div className="panel-head">
-                <Settings2 size={17} />
-                <h3>Route</h3>
+                <button
+                  className="panel-title-button"
+                  onClick={() => togglePanel("route")}
+                  type="button"
+                  aria-expanded={!collapsedPanels.route}
+                >
+                  <Settings2 size={17} />
+                  <h3>Route</h3>
+                  <ChevronDown size={15} />
+                </button>
                 <button className="icon-button mobile-only panel-close" onClick={() => setInspectorOpen(false)} aria-label="Close route and summaries">
                   <X size={17} />
                 </button>
               </div>
-              <label>
-                <span>Model override</span>
-                <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="Backend default" />
-              </label>
-              <label>
-                <span>Assistant</span>
-                <input value={assistantKey} onChange={(event) => setAssistantKey(event.target.value)} />
-              </label>
-              <label>
-                <span>Provider override</span>
-                <input value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="Backend default" />
-              </label>
-              <label>
-                <span>Client</span>
-                <input value={clientId} readOnly />
-              </label>
-              <label>
-                <span>System prompt</span>
-                <textarea
-                  className="system-prompt"
-                  value={systemPrompt}
-                  onChange={(event) => setSystemPrompt(event.target.value)}
-                  placeholder="Optional per-request instruction"
-                  rows={4}
-                />
-              </label>
+              <div className="panel-content" hidden={collapsedPanels.route}>
+                <label>
+                  <span>Model override</span>
+                  <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="Backend default" />
+                </label>
+                <label>
+                  <span>Assistant</span>
+                  <input value={assistantKey} onChange={(event) => setAssistantKey(event.target.value)} />
+                </label>
+                <label>
+                  <span>Provider override</span>
+                  <input value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="Backend default" />
+                </label>
+                <label>
+                  <span>Client</span>
+                  <input value={clientId} readOnly />
+                </label>
+                <label>
+                  <span>System prompt</span>
+                  <textarea
+                    className="system-prompt"
+                    value={systemPrompt}
+                    onChange={(event) => setSystemPrompt(event.target.value)}
+                    placeholder="Optional per-request instruction"
+                    rows={4}
+                  />
+                </label>
+              </div>
             </section>
 
-            <section className="summary-panel">
+            <section className={`summary-panel trace-panel ${collapsedPanels.trace ? "collapsed" : ""}`}>
               <div className="panel-head">
-                <RefreshCcw size={17} />
-                <h3>Rolling</h3>
+                <button
+                  className="panel-title-button"
+                  onClick={() => togglePanel("trace")}
+                  type="button"
+                  aria-expanded={!collapsedPanels.trace}
+                >
+                  <FileSearch size={17} />
+                  <h3>Trace</h3>
+                  <ChevronDown size={15} />
+                </button>
+                {traceLoading && <Loader2 size={15} className="spin" />}
+              </div>
+              <div className="panel-content" hidden={collapsedPanels.trace}>
+                <TracePanel trace={trace} loading={traceLoading} />
+              </div>
+            </section>
+
+            <section className={`summary-panel ${collapsedPanels.rolling ? "collapsed" : ""}`}>
+              <div className="panel-head">
+                <button
+                  className="panel-title-button"
+                  onClick={() => togglePanel("rolling")}
+                  type="button"
+                  aria-expanded={!collapsedPanels.rolling}
+                >
+                  <RefreshCcw size={17} />
+                  <h3>Rolling</h3>
+                  <ChevronDown size={15} />
+                </button>
                 <button
                   className="panel-tool"
                   disabled={!rolling?.summary}
@@ -777,75 +896,192 @@ export function App() {
                   <History size={14} />
                 </button>
               </div>
-              <div className="summary-text">
-                <MarkdownText text={rolling?.summary?.summary || "No rolling summary yet."} />
+              <div className="panel-content" hidden={collapsedPanels.rolling}>
+                <div className="summary-text">
+                  <MarkdownText text={rolling?.summary?.summary || "No rolling summary yet."} />
+                </div>
               </div>
             </section>
 
-            <section className="summary-panel">
+            <section className={`summary-panel ${collapsedPanels.daily ? "collapsed" : ""}`}>
               <div className="panel-head">
-                <CalendarDays size={17} />
-                <h3>{daily?.date_key || todayKey}</h3>
-              </div>
-              <div className="daily-runner">
-                <label>
-                  <span>Days ago</span>
-                  <input
-                    min={0}
-                    max={365}
-                    type="number"
-                    value={dailyDaysAgo}
-                    onChange={(event) =>
-                      setDailyDaysAgo(Math.max(0, Number(event.target.value) || 0))
-                    }
-                  />
-                </label>
-                <label className="inline-check">
-                  <input
-                    checked={dailyForce}
-                    onChange={(event) => setDailyForce(event.target.checked)}
-                    type="checkbox"
-                  />
-                  <span>Force</span>
-                </label>
                 <button
-                  className="panel-action"
-                  disabled={dailyLoading}
-                  onClick={() => void loadDailyByDaysAgo()}
+                  className="panel-title-button"
+                  onClick={() => togglePanel("daily")}
                   type="button"
+                  aria-expanded={!collapsedPanels.daily}
                 >
-                  {dailyLoading ? <Loader2 size={14} className="spin" /> : <CalendarDays size={14} />}
-                  <span>Load</span>
-                </button>
-                <button
-                  className="panel-action"
-                  disabled={dailyRunning}
-                  onClick={() => void runDailySummary()}
-                  type="button"
-                >
-                  {dailyRunning ? <Loader2 size={14} className="spin" /> : <RefreshCcw size={14} />}
-                  <span>Run</span>
+                  <CalendarDays size={17} />
+                  <h3>{daily?.date_key || todayKey}</h3>
+                  <ChevronDown size={15} />
                 </button>
               </div>
-              <div className="summary-text">
-                <MarkdownText text={daily?.summary?.summary || "No daily summary yet."} />
-              </div>
-              {daily?.memory_candidates?.length ? (
-                <div className="candidate-list">
-                  {daily.memory_candidates.slice(0, 6).map((candidate) => (
-                    <div className="candidate" key={candidate.id}>
-                      <span>{candidate.label}</span>
-                      <small>{candidate.target_layer || candidate.domain}</small>
-                    </div>
-                  ))}
+              <div className="panel-content" hidden={collapsedPanels.daily}>
+                <div className="daily-runner">
+                  <label>
+                    <span>Days ago</span>
+                    <input
+                      min={0}
+                      max={365}
+                      type="number"
+                      value={dailyDaysAgo}
+                      onChange={(event) =>
+                        setDailyDaysAgo(Math.max(0, Number(event.target.value) || 0))
+                      }
+                    />
+                  </label>
+                  <label className="inline-check">
+                    <input
+                      checked={dailyForce}
+                      onChange={(event) => setDailyForce(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Force</span>
+                  </label>
+                  <button
+                    className="panel-action"
+                    disabled={dailyLoading}
+                    onClick={() => void loadDailyByDaysAgo()}
+                    type="button"
+                  >
+                    {dailyLoading ? <Loader2 size={14} className="spin" /> : <CalendarDays size={14} />}
+                    <span>Load</span>
+                  </button>
+                  <button
+                    className="panel-action"
+                    disabled={dailyRunning}
+                    onClick={() => void runDailySummary()}
+                    type="button"
+                  >
+                    {dailyRunning ? <Loader2 size={14} className="spin" /> : <RefreshCcw size={14} />}
+                    <span>Run</span>
+                  </button>
                 </div>
-              ) : null}
+                <div className="summary-text">
+                  <MarkdownText text={daily?.summary?.summary || "No daily summary yet."} />
+                </div>
+                {daily?.memory_candidates?.length ? (
+                  <div className="candidate-list">
+                    {daily.memory_candidates.slice(0, 6).map((candidate) => (
+                      <div className="candidate" key={candidate.id}>
+                        <span>{candidate.label}</span>
+                        <small>{candidate.target_layer || candidate.domain}</small>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </section>
           </aside>
         </section>
       </main>
     </div>
   );
+}
+
+function TracePanel({ trace, loading }: { trace: RequestTrace | null; loading: boolean }) {
+  if (loading && !trace) {
+    return <div className="summary-text muted">Loading request trace...</div>;
+  }
+  if (!trace) {
+    return (
+      <div className="summary-text muted">
+        Tap Debug under a stored message to inspect the context that proxy sent.
+      </div>
+    );
+  }
+  const metadata = trace.metadata || {};
+  const snapshot = metadata.injected_context_snapshot || null;
+  return (
+    <div className="trace-body">
+      <div className="trace-id">{trace.request_id}</div>
+      <div className="trace-grid">
+        <TraceMetric label="Status" value={trace.status} />
+        <TraceMetric label="HTTP" value={trace.http_status ?? "pending"} />
+        <TraceMetric label="Model" value={trace.model_id || "backend default"} />
+        <TraceMetric label="Provider" value={trace.provider_key || "backend default"} />
+        <TraceMetric label="Path" value={metadata.path || "-"} />
+        <TraceMetric label="Mode" value={metadata.upstream_body_mode || "-"} />
+      </div>
+      {snapshot && (
+        <>
+          <div className="trace-grid compact">
+            <TraceMetric
+              label="Messages"
+              value={snapshot.final_message_count ?? "-"}
+            />
+            <TraceMetric label="Chars" value={snapshot.final_chars ?? "-"} />
+            <TraceMetric
+              label="Rolling"
+              value={snapshot.rolling_short_injected ? "yes" : "no"}
+            />
+            <TraceMetric label="Source" value={snapshot.source || "-"} />
+          </div>
+          <div className="trace-components">
+            {(snapshot.components || []).map((component, index) => (
+              <div className="trace-component" key={`${component.name || "component"}-${index}`}>
+                <div className="trace-component-head">
+                  <strong>{component.name || "component"}</strong>
+                  <span>{componentSummary(component)}</span>
+                </div>
+                {component.message_ids?.length ? (
+                  <small>ids {component.message_ids.join(", ")}</small>
+                ) : null}
+                {component.items?.length ? (
+                  <div className="trace-items">
+                    {component.items.slice(0, 5).map((item, itemIndex) => (
+                      <span key={itemIndex}>{traceItemLabel(item)}</span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {trace.error_text ? <div className="trace-error">{trace.error_text}</div> : null}
+    </div>
+  );
+}
+
+function TraceMetric({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="trace-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function componentSummary(component: TraceComponent) {
+  const parts = [];
+  if (typeof component.message_count === "number") {
+    parts.push(`${component.message_count} msg`);
+  }
+  if (typeof component.chars === "number") {
+    parts.push(`${component.chars} chars`);
+  }
+  if (typeof component.version === "number") {
+    parts.push(`v${component.version}`);
+  }
+  if (typeof component.last_message_id === "number") {
+    parts.push(`last ${component.last_message_id}`);
+  }
+  return parts.join(" · ") || "-";
+}
+
+function traceItemLabel(item: Record<string, unknown>) {
+  const pieces = [
+    item.book_name,
+    item.name,
+    item.label,
+    item.title,
+    item.keyword ? `@${item.keyword}` : null,
+    item.id
+  ]
+    .filter((value) => typeof value === "string" && value.trim())
+    .map(String);
+  return pieces.slice(0, 3).join(" · ") || "item";
 }
 
 async function requestJson<T = unknown>(path: string, init?: RequestInit): Promise<T> {
@@ -857,7 +1093,7 @@ async function requestJson<T = unknown>(path: string, init?: RequestInit): Promi
     }
   });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  const data = parseJsonResponse(text, response);
   if (!response.ok) {
     throw new Error(apiErrorMessage(data, response.statusText));
   }
@@ -878,7 +1114,7 @@ async function streamChat({
   });
   if (!response.ok || !response.body) {
     const text = await response.text();
-    const data = text ? JSON.parse(text) : null;
+    const data = parseJsonResponse(text, response);
     throw new Error(apiErrorMessage(data, response.statusText));
   }
 
@@ -977,6 +1213,24 @@ function apiErrorMessage(data: unknown, fallback: string) {
     }
   }
   return fallback;
+}
+
+function parseJsonResponse(text: string, response: Response) {
+  if (!text) {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const contentType = response.headers.get("content-type") || "";
+    const preview = text.trim().slice(0, 80);
+    if (contentType.includes("text/html") || preview.startsWith("<!doctype")) {
+      throw new Error(
+        `Expected JSON from ${response.url}, but got HTML. Check the API base/proxy route.`
+      );
+    }
+    throw error;
+  }
 }
 
 function persistedId(key: string, prefix: string) {

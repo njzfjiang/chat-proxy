@@ -903,6 +903,63 @@ async def test_web_chat_endpoint_uses_explicit_identity_and_exposes_history(
 
 
 @pytest.mark.anyio
+async def test_backend_api_key_replaces_basic_auth_from_reverse_proxy(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    captured_headers = {}
+
+    async def completions(request: Request):
+        captured_headers.update(dict(request.headers))
+        return JSONResponse(
+            {
+                "id": "cmpl-test",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            }
+        )
+
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            upstream_api_key="backend-secret",
+        )
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat/completions",
+            headers={
+                "Authorization": "Basic dXNlcjpwYXNz",
+                "X-Kelivo-Conversation-Id": "basic-auth-chat",
+            },
+            json={
+                "model": "gpt-test",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    assert captured_headers["authorization"] == "Bearer backend-secret"
+
+
+@pytest.mark.anyio
 async def test_web_chat_uses_db_recent_turns_for_context(
     tmp_path, upstream_app, monkeypatch
 ):
@@ -1105,6 +1162,7 @@ async def test_web_chat_injects_matching_worldbook_snippets(
             },
         )
         debug = await client.get("/admin/requests?conversation_id=mobile-chat")
+        debug_by_request = await client.get("/admin/requests?request_id=req-worldbook")
 
     assert resp.status_code == 200
     assert captured_body["messages"][0]["role"] == "system"
@@ -1115,6 +1173,11 @@ async def test_web_chat_injects_matching_worldbook_snippets(
     assert wb["items"][0]["id"] == "long-term"
     assert wb["items"][0]["book_name"] == "Second book"
     assert wb["items"][0]["keyword"] == "春天"
+    assert debug_by_request.json()["requests"][0]["request_id"] == "req-worldbook"
+    assert (
+        debug_by_request.json()["requests"][0]["metadata"]["injected_context_snapshot"]
+        == snapshot
+    )
 
 
 @pytest.mark.anyio

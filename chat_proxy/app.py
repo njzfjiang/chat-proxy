@@ -99,6 +99,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     @app.get("/admin/requests")
     def admin_requests(
         conversation_id: str | None = None,
+        request_id: str | None = None,
         limit: int = 20,
         include_payloads: bool = False,
     ) -> dict[str, Any]:
@@ -107,6 +108,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 _request_payload(row, include_payloads=include_payloads)
                 for row in store.list_requests(
                     conversation_id=conversation_id,
+                    request_id=request_id,
                     limit=limit,
                 )
             ]
@@ -995,13 +997,24 @@ def _forward_headers(headers: dict[str, str], cfg: ProxyConfig) -> dict[str, str
     for key, value in headers.items():
         if key.lower() in HOP_BY_HOP_HEADERS:
             continue
+        if key.lower() == "authorization" and not _is_provider_authorization(value):
+            continue
         out[key] = value
     out.setdefault("content-type", "application/json")
-    if cfg.upstream_api_key and not any(
-        key.lower() == "authorization" for key in out
-    ):
+    if cfg.upstream_api_key and not _has_provider_authorization(out):
         out["authorization"] = f"Bearer {cfg.upstream_api_key}"
     return out
+
+
+def _has_provider_authorization(headers: dict[str, str]) -> bool:
+    for key, value in headers.items():
+        if key.lower() == "authorization" and _is_provider_authorization(value):
+            return True
+    return False
+
+
+def _is_provider_authorization(value: str) -> bool:
+    return value.strip().lower().startswith("bearer ")
 
 
 def _response_headers(headers: httpx.Headers) -> dict[str, str]:

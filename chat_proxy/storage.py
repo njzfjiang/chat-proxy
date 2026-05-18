@@ -420,6 +420,7 @@ WHERE request_id = ?
         self,
         *,
         conversation_id: str | None = None,
+        request_id: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, 100))
@@ -428,6 +429,9 @@ WHERE request_id = ?
         if conversation_id:
             clauses.append("conversation_id = ?")
             params.append(conversation_id)
+        if request_id:
+            clauses.append("request_id = ?")
+            params.append(request_id)
         params.append(safe_limit)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.connect() as conn:

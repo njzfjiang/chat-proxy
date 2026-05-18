@@ -7,6 +7,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      "/admin": "http://127.0.0.1:8787",
       "/chat": "http://127.0.0.1:8787",
       "/conversations": "http://127.0.0.1:8787",
       "/daily-summaries": "http://127.0.0.1:8787",

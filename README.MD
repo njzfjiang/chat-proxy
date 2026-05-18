@@ -120,12 +120,15 @@ Debug the final context composition for recent requests:
 ```text
 GET /admin/requests?limit=20
 GET /admin/requests?conversation_id=conversation-uuid
+GET /admin/requests?request_id=request-uuid
 ```
 
 Look at `metadata.injected_context_snapshot` to see which components were
 injected, including rolling summary, worldbook snippets, recent turn ids, and
 character counts. Full request/response payloads and raw metadata are hidden by
 default; add `include_payloads=true` only when you need to inspect them.
+In the web UI, tap the `Debug` button under a stored message to open the same
+trace in the right-side inspector.
 
 Message reads include `token_usage` when the upstream provider returns it. The
 web UI falls back to a local estimate when true usage is unavailable. For
