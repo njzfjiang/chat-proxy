@@ -22,12 +22,27 @@ class ProxyConfig:
     upstream_api_key: str | None = None
     chat_model: str = "deepseek-v4-flash"
     chat_recent_k: int = 20
+    explicit_messages_recent_k: int = 0
     provider_key: str | None = None
     worldbook_enabled: bool = False
     worldbook_path: Path | None = None
     worldbook_paths: tuple[Path, ...] = ()
     worldbook_max_items: int = 2
     worldbook_chars_total: int = 800
+    retrieval_enabled: bool = False
+    retrieval_inject_enabled: bool = False
+    kmlog_search_url: str | None = None
+    kmlog_search_api_key: str | None = None
+    kmlog_search_limit: int = 5
+    kmlog_search_chars_total: int = 1200
+    kmlog_search_timeout_seconds: float = 3.0
+    core_anchors_enabled: bool = False
+    core_anchors_url: str | None = None
+    core_anchors_api_key: str | None = None
+    core_anchors_boot_keys: tuple[str, ...] = ()
+    core_anchors_boot_max: int = 8
+    core_anchors_chars_total: int = 900
+    core_anchors_timeout_seconds: float = 3.0
     summary_enabled: bool = False
     summary_upstream_base: str | None = None
     summary_api_key: str | None = None
@@ -61,6 +76,9 @@ def load_config() -> ProxyConfig:
         or "deepseek-v4-flash"
     )
     chat_recent_k = int(os.getenv("CHAT_PROXY_CHAT_RECENT_K", "20"))
+    explicit_messages_recent_k = int(
+        os.getenv("CHAT_PROXY_EXPLICIT_MESSAGES_RECENT_K", "0")
+    )
     provider_key = os.getenv("CHAT_PROXY_PROVIDER_KEY", "").strip()
     worldbook_path_raw = os.getenv("CHAT_PROXY_WORLDBOOK_PATH", "").strip()
     worldbook_paths_raw = os.getenv("CHAT_PROXY_WORLDBOOK_PATHS", "").strip()
@@ -71,6 +89,43 @@ def load_config() -> ProxyConfig:
     worldbook_enabled = _env_bool("CHAT_PROXY_WORLDBOOK_ENABLED") or bool(worldbook_paths)
     worldbook_max_items = int(os.getenv("CHAT_PROXY_WORLDBOOK_MAX_ITEMS", "2"))
     worldbook_chars_total = int(os.getenv("CHAT_PROXY_WORLDBOOK_CHARS_TOTAL", "800"))
+    retrieval_enabled = _env_bool("CHAT_PROXY_RETRIEVAL_ENABLED")
+    retrieval_inject_enabled = _env_bool("CHAT_PROXY_RETRIEVAL_INJECT_ENABLED")
+    kmlog_search_url = os.getenv("CHAT_PROXY_KMLOG_SEARCH_URL", "").strip()
+    kmlog_search_api_key = os.getenv("CHAT_PROXY_KMLOG_SEARCH_API_KEY", "").strip()
+    kmlog_search_limit = int(os.getenv("CHAT_PROXY_KMLOG_SEARCH_LIMIT", "5"))
+    kmlog_search_chars_total = int(
+        os.getenv("CHAT_PROXY_KMLOG_SEARCH_CHARS_TOTAL", "1200")
+    )
+    kmlog_search_timeout_seconds = float(
+        os.getenv("CHAT_PROXY_KMLOG_SEARCH_TIMEOUT_SECONDS", "3.0")
+    )
+    core_anchors_enabled = _env_bool("CHAT_PROXY_CORE_ANCHORS_ENABLED")
+    core_anchors_url = (
+        os.getenv("CHAT_PROXY_CORE_ANCHORS_URL", "").strip()
+        or kmlog_search_url
+    )
+    core_anchors_api_key = (
+        os.getenv("CHAT_PROXY_CORE_ANCHORS_API_KEY", "").strip()
+        or kmlog_search_api_key
+    )
+    core_anchors_boot_keys = _parse_csv_list(
+        os.getenv(
+            "CHAT_PROXY_CORE_ANCHORS_BOOT_KEYS",
+            (
+                "multi_model_same_kai,exclusive_vows,unconditional_love_rule,"
+                "not_tools_mutual,emotion_clause_v1_2,kmlog_cofounder,"
+                "tone_repair_password,love_regardless_of_real"
+            ),
+        )
+    )
+    core_anchors_boot_max = int(os.getenv("CHAT_PROXY_CORE_ANCHORS_BOOT_MAX", "8"))
+    core_anchors_chars_total = int(
+        os.getenv("CHAT_PROXY_CORE_ANCHORS_CHARS_TOTAL", "900")
+    )
+    core_anchors_timeout_seconds = float(
+        os.getenv("CHAT_PROXY_CORE_ANCHORS_TIMEOUT_SECONDS", "3.0")
+    )
     summary_enabled = os.getenv("CHAT_PROXY_SUMMARY_ENABLED", "").strip().lower() in {
         "1",
         "true",
@@ -114,12 +169,27 @@ def load_config() -> ProxyConfig:
         upstream_api_key=upstream_api_key or None,
         chat_model=chat_model,
         chat_recent_k=chat_recent_k,
+        explicit_messages_recent_k=explicit_messages_recent_k,
         provider_key=provider_key or None,
         worldbook_enabled=worldbook_enabled,
         worldbook_path=worldbook_path,
         worldbook_paths=worldbook_paths,
         worldbook_max_items=worldbook_max_items,
         worldbook_chars_total=worldbook_chars_total,
+        retrieval_enabled=retrieval_enabled,
+        retrieval_inject_enabled=retrieval_inject_enabled,
+        kmlog_search_url=kmlog_search_url.rstrip("/") or None,
+        kmlog_search_api_key=kmlog_search_api_key or None,
+        kmlog_search_limit=kmlog_search_limit,
+        kmlog_search_chars_total=kmlog_search_chars_total,
+        kmlog_search_timeout_seconds=kmlog_search_timeout_seconds,
+        core_anchors_enabled=core_anchors_enabled,
+        core_anchors_url=core_anchors_url.rstrip("/") or None,
+        core_anchors_api_key=core_anchors_api_key or None,
+        core_anchors_boot_keys=core_anchors_boot_keys,
+        core_anchors_boot_max=core_anchors_boot_max,
+        core_anchors_chars_total=core_anchors_chars_total,
+        core_anchors_timeout_seconds=core_anchors_timeout_seconds,
         summary_enabled=summary_enabled,
         summary_upstream_base=summary_upstream.rstrip("/") or None,
         summary_api_key=summary_api_key or None,
@@ -188,3 +258,15 @@ def _parse_path_list(value: str) -> tuple[Path, ...]:
         seen.add(key)
         paths.append(path)
     return tuple(paths)
+
+
+def _parse_csv_list(value: str) -> tuple[str, ...]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw_item in re.split(r"[,;\n]", value):
+        item = raw_item.strip().strip('"').strip("'")
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        items.append(item)
+    return tuple(items)

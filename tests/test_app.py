@@ -1181,6 +1181,214 @@ async def test_web_chat_injects_matching_worldbook_snippets(
 
 
 @pytest.mark.anyio
+async def test_web_chat_retrieves_kmlog_without_injecting_until_enabled(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    captured_body = {}
+    search_payloads = []
+
+    async def completions(request: Request):
+        captured_body.update(await request.json())
+        return JSONResponse(
+            {
+                "id": "cmpl-test",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "retrieval answer"}}
+                ],
+            }
+        )
+
+    class FakeSearchResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "id": 101,
+                        "timestamp": "2026-05-17T12:00:00Z",
+                        "role": "user",
+                        "content_preview": "old chat hit about orchids",
+                        "conversation_title": "Long old conversation title",
+                        "relevance": 3.2,
+                        "match_type": "content",
+                        "token_hits": 2,
+                    }
+                ]
+            }
+
+    class FakeSearchClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            search_payloads.append({"url": url, "headers": headers, "json": json})
+            return FakeSearchResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeSearchClient)
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            kmlog_search_url="http://kmlog",
+            kmlog_search_api_key="secret-search-key",
+            kmlog_search_limit=3,
+        )
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat",
+            json={
+                "client_id": "phone-1",
+                "conversation_id": "mobile-chat",
+                "request_id": "req-retrieve",
+                "assistant_key": "kai",
+                "retrieval_enabled": True,
+                "retrieval_inject": False,
+                "user_text": "orchids",
+            },
+        )
+        debug = await client.get("/admin/requests?request_id=req-retrieve")
+
+    assert resp.status_code == 200
+    assert search_payloads[0]["url"] == "http://kmlog/search"
+    assert search_payloads[0]["headers"]["x-api-key"] == "secret-search-key"
+    assert search_payloads[0]["json"]["query"] == "orchids"
+    assert all(
+        "Retrieved chat log snippets" not in message["content"]
+        for message in captured_body["messages"]
+    )
+    snapshot = debug.json()["requests"][0]["metadata"]["injected_context_snapshot"]
+    kmlog = next(component for component in snapshot["components"] if component["name"] == "kmlog_search")
+    assert kmlog["enabled"] is True
+    assert kmlog["inject"] is False
+    assert kmlog["message_count"] == 0
+    assert kmlog["items"][0]["id"] == 101
+
+
+@pytest.mark.anyio
+async def test_web_chat_can_inject_kmlog_retrieval(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    captured_body = {}
+
+    async def completions(request: Request):
+        captured_body.update(await request.json())
+        return JSONResponse(
+            {
+                "id": "cmpl-test",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "retrieval answer"}}
+                ],
+            }
+        )
+
+    class FakeSearchResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "id": 102,
+                        "timestamp": "2026-05-17T12:00:00Z",
+                        "role": "assistant",
+                        "content_preview": "injectable old chat hit",
+                        "conversation_title": "Memory",
+                        "relevance": 2.0,
+                        "match_type": "content",
+                        "token_hits": 1,
+                    }
+                ]
+            }
+
+    class FakeSearchClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            return FakeSearchResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeSearchClient)
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            kmlog_search_url="http://kmlog",
+        )
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat",
+            json={
+                "client_id": "phone-1",
+                "conversation_id": "mobile-chat",
+                "request_id": "req-inject",
+                "assistant_key": "kai",
+                "retrieval_enabled": True,
+                "retrieval_inject": True,
+                "user_text": "memory",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert any(
+        "Retrieved chat log snippets" in message["content"]
+        for message in captured_body["messages"]
+    )
+
+
+@pytest.mark.anyio
 async def test_web_chat_replays_completed_explicit_request_id(
     tmp_path, upstream_app, monkeypatch
 ):

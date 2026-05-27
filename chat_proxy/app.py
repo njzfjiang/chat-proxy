@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -689,6 +689,10 @@ async def _stream_upstream(
             if upstream.status_code >= 400:
                 status = "error"
                 error_text = "".join(raw_chunks)
+        except (asyncio.CancelledError, GeneratorExit):
+            status = "cancelled"
+            error_text = "client disconnected while streaming"
+            raise
         except Exception as exc:
             status = "error"
             error_text = str(exc)

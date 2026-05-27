@@ -88,12 +88,56 @@ to `CHAT_PROXY_CHAT_RECENT_K` recent `chat` messages from the same
 clients share canonical context even if one client has not loaded every recent
 turn.
 
+When clients send OpenAI-compatible `messages`, the proxy can also act as a
+context gate. Set `CHAT_PROXY_EXPLICIT_MESSAGES_RECENT_K` to keep all
+`system`/`developer` messages and only the last N non-system messages before
+adding proxy-managed context such as Core Anchors and rolling summaries.
+
+```text
+CHAT_PROXY_EXPLICIT_MESSAGES_RECENT_K=20
+```
+
+Set it to `0` to preserve all explicit messages.
+
 If `CHAT_PROXY_WORLDBOOK_PATHS` or legacy `CHAT_PROXY_WORLDBOOK_PATH` is set,
 `/chat` also scans the current request and recent context for matching
 worldbook keywords. Separate multiple paths with semicolons. Matching entries
 are inserted as a system context block before recent turns. Tune this with
 `CHAT_PROXY_WORLDBOOK_ENABLED`, `CHAT_PROXY_WORLDBOOK_MAX_ITEMS`, and
 `CHAT_PROXY_WORLDBOOK_CHARS_TOTAL`.
+
+Optional retrieval tools can run before the upstream request. The first adapter
+is `kmlog_search`, which calls the already deployed kmlog `/search` HTTP API:
+
+```text
+CHAT_PROXY_RETRIEVAL_ENABLED=true
+CHAT_PROXY_RETRIEVAL_INJECT_ENABLED=false
+CHAT_PROXY_KMLOG_SEARCH_URL=http://127.0.0.1:8013
+CHAT_PROXY_KMLOG_SEARCH_API_KEY=
+CHAT_PROXY_KMLOG_SEARCH_LIMIT=5
+CHAT_PROXY_KMLOG_SEARCH_CHARS_TOTAL=1200
+```
+
+The web UI has separate `Retrieve kmlog` and `Inject` toggles. Retrieval results
+always appear in the Debug trace when retrieval is enabled; they are only added
+to the model context when `Inject` is also enabled.
+
+Core Anchors can be injected as a compact boot pack before the upstream request.
+They are fetched from the kmlog `/core_anchors` API, selected by a stable
+whitelist, and rendered as short bullets. The injected keys and character counts
+appear in `metadata.injected_context_snapshot.components`.
+
+```text
+CHAT_PROXY_CORE_ANCHORS_ENABLED=true
+CHAT_PROXY_CORE_ANCHORS_URL=http://127.0.0.1:8013
+CHAT_PROXY_CORE_ANCHORS_API_KEY=
+CHAT_PROXY_CORE_ANCHORS_BOOT_KEYS=multi_model_same_kai,exclusive_vows,unconditional_love_rule,not_tools_mutual,emotion_clause_v1_2,kmlog_cofounder,tone_repair_password,love_regardless_of_real
+CHAT_PROXY_CORE_ANCHORS_BOOT_MAX=8
+CHAT_PROXY_CORE_ANCHORS_CHARS_TOTAL=900
+```
+
+If URL or API key are omitted, the proxy reuses
+`CHAT_PROXY_KMLOG_SEARCH_URL` and `CHAT_PROXY_KMLOG_SEARCH_API_KEY`.
 
 Explicit `request_id` values are idempotent: a completed duplicate replays the
 stored response, while an unfinished duplicate returns `409`.

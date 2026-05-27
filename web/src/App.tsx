@@ -87,6 +87,11 @@ type RollingVersion = {
 
 type TraceComponent = {
   name?: string;
+  enabled?: boolean;
+  inject?: boolean;
+  result_count?: number;
+  error?: string;
+  errors?: string[];
   message_count?: number;
   chars?: number;
   version?: number;
@@ -128,6 +133,8 @@ const MODEL_KEY = "chatProxyWeb.model";
 const ASSISTANT_KEY = "chatProxyWeb.assistantKey";
 const PROVIDER_KEY = "chatProxyWeb.providerKey";
 const SYSTEM_PROMPT_KEY = "chatProxyWeb.systemPrompt";
+const RETRIEVAL_ENABLED_KEY = "chatProxyWeb.retrievalEnabled";
+const RETRIEVAL_INJECT_KEY = "chatProxyWeb.retrievalInject";
 const API_BASE = normalizeApiBase(import.meta.env.VITE_API_BASE);
 
 export function App() {
@@ -142,6 +149,12 @@ export function App() {
   const [providerKey, setProviderKey] = useState(() => localStorage.getItem(PROVIDER_KEY) || "");
   const [systemPrompt, setSystemPrompt] = useState(
     () => localStorage.getItem(SYSTEM_PROMPT_KEY) || ""
+  );
+  const [retrievalEnabled, setRetrievalEnabled] = useState(
+    () => localStorage.getItem(RETRIEVAL_ENABLED_KEY) === "true"
+  );
+  const [retrievalInject, setRetrievalInject] = useState(
+    () => localStorage.getItem(RETRIEVAL_INJECT_KEY) === "true"
   );
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -213,6 +226,14 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(SYSTEM_PROMPT_KEY, systemPrompt);
   }, [systemPrompt]);
+
+  useEffect(() => {
+    localStorage.setItem(RETRIEVAL_ENABLED_KEY, String(retrievalEnabled));
+  }, [retrievalEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem(RETRIEVAL_INJECT_KEY, String(retrievalInject));
+  }, [retrievalInject]);
 
   useEffect(() => {
     void refreshConversations();
@@ -558,6 +579,8 @@ export function App() {
       ...(providerKey.trim() ? { provider_key: providerKey.trim() } : {}),
       ...(model.trim() ? { model: model.trim() } : {}),
       ...(systemPrompt.trim() ? { system_prompt: systemPrompt.trim() } : {}),
+      retrieval_enabled: retrievalEnabled,
+      retrieval_inject: retrievalEnabled && retrievalInject,
       stream: true,
       stream_options: { include_usage: true },
       user_text: text
@@ -852,6 +875,25 @@ export function App() {
                     rows={4}
                   />
                 </label>
+                <div className="toggle-row">
+                  <label>
+                    <input
+                      checked={retrievalEnabled}
+                      onChange={(event) => setRetrievalEnabled(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Retrieve kmlog</span>
+                  </label>
+                  <label>
+                    <input
+                      checked={retrievalInject}
+                      disabled={!retrievalEnabled}
+                      onChange={(event) => setRetrievalInject(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Inject</span>
+                  </label>
+                </div>
               </div>
             </section>
 
@@ -1027,6 +1069,14 @@ function TracePanel({ trace, loading }: { trace: RequestTrace | null; loading: b
                 {component.message_ids?.length ? (
                   <small>ids {component.message_ids.join(", ")}</small>
                 ) : null}
+                {component.error ? (
+                  <small className="trace-component-error">{component.error}</small>
+                ) : null}
+                {component.errors?.length ? (
+                  <small className="trace-component-error">
+                    {component.errors.join(" · ")}
+                  </small>
+                ) : null}
                 {component.items?.length ? (
                   <div className="trace-items">
                     {component.items.slice(0, 5).map((item, itemIndex) => (
@@ -1055,11 +1105,20 @@ function TraceMetric({ label, value }: { label: string; value: ReactNode }) {
 
 function componentSummary(component: TraceComponent) {
   const parts = [];
+  if (typeof component.enabled === "boolean") {
+    parts.push(component.enabled ? "on" : "off");
+  }
   if (typeof component.message_count === "number") {
     parts.push(`${component.message_count} msg`);
   }
+  if (typeof component.result_count === "number") {
+    parts.push(`${component.result_count} hits`);
+  }
   if (typeof component.chars === "number") {
     parts.push(`${component.chars} chars`);
+  }
+  if (typeof component.inject === "boolean") {
+    parts.push(component.inject ? "inject" : "preview");
   }
   if (typeof component.version === "number") {
     parts.push(`v${component.version}`);
@@ -1072,11 +1131,11 @@ function componentSummary(component: TraceComponent) {
 
 function traceItemLabel(item: Record<string, unknown>) {
   const pieces = [
-    item.book_name,
     item.name,
     item.label,
     item.title,
     item.keyword ? `@${item.keyword}` : null,
+    item.book_name,
     item.id
   ]
     .filter((value) => typeof value === "string" && value.trim())
