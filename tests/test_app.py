@@ -279,6 +279,72 @@ async def test_proxy_streams_and_persists_assistant_text(tmp_path, upstream_app,
 
 
 @pytest.mark.anyio
+async def test_proxy_finishes_partial_stream_on_incomplete_chunked_read(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            raise httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body "
+                "(incomplete chunked read)"
+            )
+
+    class FakeUpstreamClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def build_request(self, method, url, **kwargs):
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, request, stream=False):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=BrokenStream(),
+                request=request,
+            )
+
+        async def aclose(self):
+            pass
+
+    original_async_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", FakeUpstreamClient)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat/completions",
+            headers={"X-Kelivo-Conversation-Id": "chat-stream"},
+            json={
+                "model": "gpt-test",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hello stream"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    assert "partial" in resp.text
+
+    conn = sqlite3.connect(db_path)
+    assistant = conn.execute(
+        "SELECT content FROM messages WHERE role = 'assistant'"
+    ).fetchone()[0]
+    request_row = conn.execute("SELECT status, error_text FROM requests").fetchone()
+    conn.close()
+
+    assert assistant == "partial"
+    assert request_row[0] == "upstream_incomplete"
+    assert "incomplete chunked read" in request_row[1]
+
+
+@pytest.mark.anyio
 async def test_proxy_injects_existing_summary_without_mutating_request_json(
     tmp_path, upstream_app, monkeypatch
 ):

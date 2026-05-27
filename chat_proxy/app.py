@@ -693,6 +693,11 @@ async def _stream_upstream(
             status = "cancelled"
             error_text = "client disconnected while streaming"
             raise
+        except httpx.RemoteProtocolError as exc:
+            status = "upstream_incomplete" if raw_chunks else "error"
+            error_text = str(exc)
+            if not raw_chunks:
+                raise
         except Exception as exc:
             status = "error"
             error_text = str(exc)
