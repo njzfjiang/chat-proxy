@@ -143,10 +143,15 @@ The response contains `messages`, a compact `debug` object, and a rendered
 rendered through `render_to_openai_messages()`, so the top-level `messages`
 field matches the OpenAI-compatible message list inside the packet. The debug
 object includes `included_layers`, normalized `source_ids`, rough
-`token_estimates`, and `truncated` metadata. The endpoint is preview-only: it
-does not call the LLM, persist turns, or update summaries. `chatlog_history` and
-`health_data` are noted in debug if requested, but they are not implemented in
-this thin preview endpoint yet.
+`token_estimates`, and `truncated` metadata. Token estimates split injected
+layers from retrieved-but-not-injected layers, so preview retrieval can be
+inspected without confusing it for prompt cost. Trigger debug includes
+`trigger_input_sources`; Core Anchor and World Book triggers only scan the
+current user/task text and recent user turns, not assistant/system text or
+already-injected context. The endpoint is preview-only: it does not call the
+LLM, persist turns, or update summaries. `chatlog_history` and `health_data`
+are noted in debug if requested, but they are not implemented in this thin
+preview endpoint yet.
 
 For Context Builder-shaped requests, `mode`, `locale`, `runtime_prefs`,
 `task_hint`, `guardrails`, and `timestamp` are rendered as a compact
@@ -213,7 +218,11 @@ to the model context when `Inject` is also enabled.
 Core Anchors can be injected as a compact boot pack before the upstream request.
 They are fetched from the kmlog `/core_anchors` API, selected by a stable
 whitelist, and rendered as short bullets. The injected keys and character counts
-appear in `metadata.injected_context_snapshot.components`.
+appear in `metadata.injected_context_snapshot.components`. If an anchor or World
+Book entry exposes `compact_summary`, that field is preferred over full content.
+Anchor and World Book budget trimming stops at sentence boundaries; if a
+complete sentence cannot fit, that item is skipped instead of injecting a broken
+fragment.
 
 ```text
 CHAT_PROXY_CORE_ANCHORS_ENABLED=true

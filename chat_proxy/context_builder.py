@@ -229,9 +229,15 @@ def build_web_chat_context(
             *recent_context,
             {"role": "user", "content": user_text},
         ]
+        trigger_input = _trigger_input(
+            body=body,
+            messages=base_messages,
+            current_user_text=user_text,
+        )
         wb_messages, wb_snapshot = _worldbook_messages(
             cfg=cfg,
-            scan_text=_scan_text(base_messages),
+            scan_text=trigger_input["text"],
+            trigger_input_sources=trigger_input["sources"],
         )
         kmlog_messages, kmlog_snapshot = _kmlog_search_messages(
             body=body,
@@ -257,9 +263,11 @@ def build_web_chat_context(
         raise ValueError("POST /chat requires messages or user_text.")
 
     if isinstance(messages, list):
+        trigger_input = _trigger_input(body=body, messages=upstream_messages)
         wb_messages, wb_snapshot = _worldbook_messages(
             cfg=cfg,
-            scan_text=_scan_text(upstream_messages),
+            scan_text=trigger_input["text"],
+            trigger_input_sources=trigger_input["sources"],
         )
         if wb_messages:
             upstream_messages = [*wb_messages, *upstream_messages]
@@ -273,10 +281,13 @@ def build_web_chat_context(
             upstream_messages = [*kmlog_messages, *upstream_messages]
         snapshot["components"].insert(1, kmlog_snapshot)
 
+    if "trigger_input" not in locals():
+        trigger_input = _trigger_input(body=body, messages=upstream_messages)
     core_anchor_messages, core_anchor_snapshot = _core_anchor_messages(
         body=body,
         cfg=cfg,
-        scan_text=_scan_text(upstream_messages),
+        scan_text=trigger_input["text"],
+        trigger_input_sources=trigger_input["sources"],
     )
     if core_anchor_messages:
         upstream_messages = [*core_anchor_messages, *upstream_messages]
@@ -341,6 +352,7 @@ def _core_anchor_messages(
     body: Mapping[str, Any],
     cfg: ProxyConfig,
     scan_text: str,
+    trigger_input_sources: list[str],
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     selector = _core_anchor_selector(body=body, scan_text=scan_text)
     snapshot: dict[str, Any] = {
@@ -352,6 +364,7 @@ def _core_anchor_messages(
         "triggered_functions": selector["triggered_functions"],
         "triggered_keys": selector["triggered_keys"],
         "trigger_matches": selector["trigger_matches"],
+        "trigger_input_sources": trigger_input_sources,
         "items": [],
         "chars": 0,
     }
@@ -445,7 +458,7 @@ def _core_anchor_messages(
             continue
         note = _compact_anchor(anchor)
         line = f"- {key}: {note}"
-        clipped = line[:remaining_chars].rstrip()
+        clipped = _fit_without_half_sentence(line, remaining_chars)
         if not clipped:
             continue
         remaining_chars -= len(clipped)
@@ -569,11 +582,16 @@ def _compact_anchor(anchor: Mapping[str, Any]) -> str:
     override = ANCHOR_COMPACT_OVERRIDES.get(key)
     if override:
         return override
+    compact = str(anchor.get("compact_summary") or "").strip()
+    if compact:
+        return compact
     content = str(anchor.get("content") or "").strip()
     if not content:
         return str(anchor.get("title") or key).strip()
     parts = re.split(r"(?<=[。！？.!?])\s*", content, maxsplit=1)
-    return (parts[0] if parts else content)[:160].rstrip()
+    return _fit_without_half_sentence(parts[0] if parts else content, 160) or (
+        parts[0] if parts else content
+    ).strip()
 
 
 def _kmlog_search_messages(
@@ -689,12 +707,15 @@ def _worldbook_messages(
     *,
     cfg: ProxyConfig,
     scan_text: str,
+    trigger_input_sources: list[str],
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     snapshot: dict[str, Any] = {
         "name": "wb_snippets",
         "enabled": cfg.worldbook_enabled,
         "message_count": 0,
         "items": [],
+        "warnings": [],
+        "trigger_input_sources": trigger_input_sources,
         "chars": 0,
     }
     if not cfg.worldbook_enabled:
@@ -704,16 +725,22 @@ def _worldbook_messages(
         snapshot["error"] = "CHAT_PROXY_WORLDBOOK_PATHS is not configured."
         return [], snapshot
     entries: list[dict[str, Any]] = []
-    errors: list[str] = []
+    warnings: list[dict[str, str]] = []
     for path in paths:
         loaded, error = _load_worldbook_entries(path)
         if error:
-            errors.append(error)
+            warnings.append(
+                {
+                    "code": "worldbook_load_failed",
+                    "path": str(path),
+                    "message": error,
+                }
+            )
             continue
         entries.extend(loaded)
     snapshot["sources"] = [str(path) for path in paths]
-    if errors:
-        snapshot["errors"] = errors
+    if warnings:
+        snapshot["warnings"] = warnings
     if not entries:
         return [], snapshot
 
@@ -738,14 +765,21 @@ def _worldbook_messages(
         if len(chosen) >= max_items or remaining_chars <= 0:
             break
         entry = match["entry"]
-        content = str(entry.get("content") or "").strip()
+        content = str(
+            entry.get("compact_summary") or entry.get("content") or ""
+        ).strip()
         if not content:
             continue
-        clipped = content[:remaining_chars].rstrip()
+        block_title = f"[{entry.get('name') or entry.get('id') or 'Worldbook'}]\n"
+        clipped = _fit_without_half_sentence(
+            content,
+            remaining_chars - len(block_title),
+        )
         if not clipped:
             continue
-        remaining_chars -= len(clipped)
-        blocks.append(f"[{entry.get('name') or entry.get('id') or 'Worldbook'}]\n{clipped}")
+        block = f"{block_title}{clipped}"
+        remaining_chars -= len(block)
+        blocks.append(block)
         chosen.append(
             {
                 "id": entry.get("id"),
@@ -754,6 +788,7 @@ def _worldbook_messages(
                 "source": entry.get("_source_path"),
                 "priority": entry.get("priority"),
                 "keyword": match.get("keyword"),
+                "used_compact_summary": bool(str(entry.get("compact_summary") or "").strip()),
                 "chars": len(clipped),
             }
         )
@@ -812,6 +847,60 @@ def _messages_chars(messages: list[Any]) -> int:
         if isinstance(message, Mapping):
             total += len(str(message.get("content") or ""))
     return total
+
+
+def _trigger_input(
+    *,
+    body: Mapping[str, Any],
+    messages: list[Any],
+    current_user_text: str | None = None,
+) -> dict[str, Any]:
+    parts: list[str] = []
+    sources: list[str] = []
+    task_hint = str(body.get("task_hint") or "").strip()
+    if task_hint:
+        parts.append(task_hint)
+        sources.append("task_hint")
+
+    user_messages = [
+        str(message.get("content") or "").strip()
+        for message in messages
+        if isinstance(message, Mapping)
+        and str(message.get("role") or "").strip() == "user"
+        and str(message.get("content") or "").strip()
+    ]
+    current = (current_user_text or "").strip() or (user_messages[-1] if user_messages else "")
+    recent_users = user_messages[:-1] if current and user_messages else user_messages
+    if current:
+        parts.append(current)
+        sources.append("current_user")
+    for index, text in enumerate(recent_users[-6:]):
+        parts.append(text)
+        sources.append(f"recent_user_turn:{index}")
+    return {"text": "\n".join(parts), "sources": _dedupe_strings(sources)}
+
+
+def _fit_without_half_sentence(text: str, limit: int) -> str:
+    text = " ".join(str(text or "").strip().split())
+    if limit <= 0 or not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    sentence = _sentence_prefix(text, limit)
+    if sentence:
+        return sentence
+    return ""
+
+
+def _sentence_prefix(text: str, limit: int) -> str:
+    best = ""
+    for match in re.finditer(r"[。！？.!?](?:[\"'”’）\)])?", text):
+        end = match.end()
+        if end <= limit:
+            best = text[:end].rstrip()
+        else:
+            break
+    return best
 
 
 def _optional_string(value: Any) -> str | None:

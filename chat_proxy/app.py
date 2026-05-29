@@ -898,6 +898,9 @@ def _context_builder_chat_body(body: dict[str, Any]) -> dict[str, Any]:
         task_hint = str(body.get("task_hint") or "").strip()
         if task_hint:
             chat_body["user_text"] = task_hint
+    task_hint = str(body.get("task_hint") or "").strip()
+    if task_hint:
+        chat_body["task_hint"] = task_hint
     return chat_body
 
 
@@ -987,6 +990,24 @@ def _context_builder_debug(
         for component in snapshot.get("components") or []
         if isinstance(component, dict)
     ]
+    injected_by_layer = {
+        str(component.get("name") or f"component_{index}"): _rough_tokens(
+            int(component.get("chars") or 0)
+        )
+        for index, component in enumerate(components)
+        if int(component.get("message_count") or 0) > 0
+    }
+    retrieved_not_injected_by_layer = {
+        str(component.get("name") or f"component_{index}"): _rough_tokens(
+            int(component.get("retrieved_chars") or component.get("chars") or 0)
+        )
+        for index, component in enumerate(components)
+        if int(component.get("message_count") or 0) <= 0
+        and (
+            int(component.get("result_count") or 0) > 0
+            or bool(component.get("items"))
+        )
+    }
     by_layer = {
         str(component.get("name") or f"component_{index}"): _rough_tokens(
             int(component.get("chars") or 0)
@@ -1011,6 +1032,12 @@ def _context_builder_debug(
         "source_ids": _context_builder_source_ids(components),
         "token_estimates": {
             "total": _rough_tokens(int(snapshot.get("final_chars") or 0)),
+            "injected_total": sum(injected_by_layer.values()),
+            "retrieved_not_injected_total": sum(
+                retrieved_not_injected_by_layer.values()
+            ),
+            "injected_by_layer": injected_by_layer,
+            "retrieved_not_injected_by_layer": retrieved_not_injected_by_layer,
             "by_layer": by_layer,
         },
         "truncated": {"by_layer": {}},

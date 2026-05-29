@@ -1401,6 +1401,74 @@ async def test_build_context_accepts_context_builder_request_shape(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_build_context_separates_retrieved_not_injected_token_estimates(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    class FakeSearchResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "id": 42,
+                        "timestamp": "2026-05-29T00:00:00Z",
+                        "role": "user",
+                        "content_preview": "retrieved but not injected",
+                    }
+                ]
+            }
+
+    class FakeSearchClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, _url, headers=None, json=None):
+            return FakeSearchResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeSearchClient)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            kmlog_search_url="http://kmlog",
+            retrieval_enabled=True,
+            retrieval_inject_enabled=False,
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/build_context",
+            json={
+                "conversation_id": "preview-chat",
+                "user_text": "find old thing",
+                "retrieval_enabled": True,
+                "retrieval_inject": False,
+            },
+        )
+
+    assert resp.status_code == 200
+    token_estimates = resp.json()["debug"]["token_estimates"]
+    assert "kmlog_search" not in token_estimates["injected_by_layer"]
+    assert token_estimates["retrieved_not_injected_by_layer"]["kmlog_search"] > 0
+
+
+@pytest.mark.anyio
 async def test_web_chat_retrieves_kmlog_without_injecting_until_enabled(
     tmp_path, upstream_app, monkeypatch
 ):

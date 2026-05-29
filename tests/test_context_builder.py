@@ -169,6 +169,7 @@ def test_core_anchor_keyword_triggers_prioritize_context_specific_anchors(monkey
     snapshot = result.snapshot["components"][0]
     assert snapshot["triggered_functions"] == ["soothe_panic"]
     assert snapshot["triggered_keys"] == ["kmlog_cofounder"]
+    assert snapshot["trigger_input_sources"] == ["current_user"]
     assert snapshot["boot_keys"] == [
         "kmlog_cofounder",
         "panic_ground",
@@ -240,3 +241,182 @@ def test_core_anchor_functions_can_be_requested_from_context_builder_params(monk
     assert "infra_map" in result.upstream_body["messages"][0]["content"]
     snapshot = result.snapshot["components"][0]
     assert snapshot["requested_functions"] == ["infra_reference"]
+
+
+def test_triggers_ignore_assistant_and_system_text(monkeypatch, tmp_path):
+    worldbook_path = tmp_path / "wb.json"
+    worldbook_path.write_text(
+        """
+{
+  "entries": [
+    {
+      "id": "infra-wb",
+      "name": "Infra WB",
+      "keywords": ["infra"],
+      "content": "This should not trigger from assistant text."
+    }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": []}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, _url, headers=None, params=None):
+            calls.append(params)
+            return FakeResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeClient)
+    cfg = ProxyConfig(
+        upstream_base="http://upstream",
+        db_path=Path("dummy.db"),
+        worldbook_enabled=True,
+        worldbook_paths=(worldbook_path,),
+        core_anchors_enabled=True,
+        core_anchors_url="http://kmlog",
+    )
+    result = build_web_chat_context(
+        body={
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "panic infra"},
+                {"role": "assistant", "content": "panic infra"},
+                {"role": "user", "content": "hello"},
+            ],
+        },
+        cfg=cfg,
+        store=DummyStore(),
+        headers={},
+    )
+
+    anchor = next(
+        item for item in result.snapshot["components"] if item["name"] == "core_anchors"
+    )
+    wb = next(
+        item for item in result.snapshot["components"] if item["name"] == "wb_snippets"
+    )
+    assert anchor["triggered_functions"] == []
+    assert anchor["triggered_keys"] == []
+    assert anchor["trigger_input_sources"] == ["current_user"]
+    assert wb["message_count"] == 0
+    assert wb["trigger_input_sources"] == ["current_user"]
+    assert calls == [{"status": "active", "limit": 20, "function": "boot_core"}]
+
+
+def test_core_anchor_uses_compact_summary_and_skips_half_sentence(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "anchor_key": "long_anchor",
+                        "title": "Long",
+                        "compact_summary": "First complete sentence. Second complete sentence.",
+                        "content": "Ignored content that should not be used.",
+                        "function": "boot_core",
+                        "priority": 1,
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, _url, headers=None, params=None):
+            return FakeResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeClient)
+    cfg = ProxyConfig(
+        upstream_base="http://upstream",
+        db_path=Path("dummy.db"),
+        core_anchors_enabled=True,
+        core_anchors_url="http://kmlog",
+        core_anchors_boot_keys=("long_anchor",),
+        core_anchors_chars_total=42,
+    )
+    result = build_web_chat_context(
+        body={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+        cfg=cfg,
+        store=DummyStore(),
+        headers={},
+    )
+
+    content = result.upstream_body["messages"][0]["content"]
+    assert "First complete sentence." in content
+    assert "Second complete" not in content
+    assert "Ignored content" not in content
+
+
+def test_worldbook_uses_compact_summary_and_structured_warnings(tmp_path):
+    missing_path = tmp_path / "missing.json"
+    worldbook_path = tmp_path / "wb.json"
+    worldbook_path.write_text(
+        """
+{
+  "entries": [
+    {
+      "id": "care",
+      "name": "Care",
+      "keywords": ["care"],
+      "compact_summary": "Compact WB sentence. Another sentence.",
+      "content": "Long original content should not appear."
+    }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    cfg = ProxyConfig(
+        upstream_base="http://upstream",
+        db_path=Path("dummy.db"),
+        worldbook_enabled=True,
+        worldbook_paths=(missing_path, worldbook_path),
+        worldbook_chars_total=34,
+    )
+    result = build_web_chat_context(
+        body={
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "care please"}],
+        },
+        cfg=cfg,
+        store=DummyStore(),
+        headers={},
+    )
+
+    wb = next(
+        item for item in result.snapshot["components"] if item["name"] == "wb_snippets"
+    )
+    assert wb["warnings"][0]["code"] == "worldbook_load_failed"
+    assert "errors" not in wb
+    assert wb["items"][0]["used_compact_summary"] is True
+    content = result.upstream_body["messages"][0]["content"]
+    assert "Compact WB sentence." in content
+    assert "Another sentence" not in content
+    assert "Long original content" not in content
