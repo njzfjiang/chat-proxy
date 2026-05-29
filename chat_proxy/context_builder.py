@@ -631,10 +631,7 @@ def _compact_anchor(anchor: Mapping[str, Any]) -> str:
     content = str(anchor.get("content") or "").strip()
     if not content:
         return str(anchor.get("title") or key).strip()
-    parts = re.split(r"(?<=[。！？.!?])\s*", content, maxsplit=1)
-    return _fit_without_half_sentence(parts[0] if parts else content, 160) or (
-        parts[0] if parts else content
-    ).strip()
+    return _fit_without_half_sentence(content, 160)
 
 
 def _kmlog_search_messages(
@@ -945,13 +942,39 @@ def _fit_without_half_sentence(text: str, limit: int) -> str:
 
 def _sentence_prefix(text: str, limit: int) -> str:
     best = ""
-    for match in re.finditer(r"[。！？.!?](?:[\"'”’）\)])?", text):
-        end = match.end()
+    for index, char in enumerate(text):
+        if not _is_sentence_boundary(text, index):
+            continue
+        end = _sentence_boundary_end(text, index)
         if end <= limit:
             best = text[:end].rstrip()
-        else:
-            break
+            continue
+        break
     return best
+
+
+def _is_sentence_boundary(text: str, index: int) -> bool:
+    char = text[index]
+    if char in "。！？；":
+        return True
+    if char in "!?;":
+        return True
+    if char != ".":
+        return False
+    prev_char = text[index - 1] if index > 0 else ""
+    next_char = text[index + 1] if index + 1 < len(text) else ""
+    return not (_is_ascii_token_char(prev_char) and _is_ascii_token_char(next_char))
+
+
+def _sentence_boundary_end(text: str, index: int) -> int:
+    end = index + 1
+    while end < len(text) and text[end] in "\"'”’）)]":
+        end += 1
+    return end
+
+
+def _is_ascii_token_char(char: str) -> bool:
+    return bool(char) and bool(re.fullmatch(r"[A-Za-z0-9_]", char))
 
 
 def _sanitize_injected_snippet(content: str) -> str:

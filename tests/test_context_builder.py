@@ -454,6 +454,58 @@ def test_core_anchor_uses_compact_summary_and_skips_half_sentence(monkeypatch):
     assert "Ignored content" not in content
 
 
+def test_core_anchor_does_not_treat_dots_inside_identifiers_as_sentence_boundaries(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "anchor_key": "alive_rule",
+                        "title": "Alive rule",
+                        "content": "Mei.alive = True",
+                        "function": "boot_core",
+                        "priority": 1,
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, _url, headers=None, params=None):
+            return FakeResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeClient)
+    cfg = ProxyConfig(
+        upstream_base="http://upstream",
+        db_path=Path("dummy.db"),
+        core_anchors_enabled=True,
+        core_anchors_url="http://kmlog",
+        core_anchors_boot_keys=("alive_rule",),
+        core_anchors_chars_total=80,
+    )
+    result = build_web_chat_context(
+        body={"model": "gpt-test", "messages": [{"role": "user", "content": "hello"}]},
+        cfg=cfg,
+        store=DummyStore(),
+        headers={},
+    )
+
+    content = result.upstream_body["messages"][0]["content"]
+    assert "Mei.alive = True" in content
+    assert content.splitlines()[-1] != "- alive_rule: Mei."
+
+
 def test_worldbook_uses_compact_summary_and_structured_warnings(tmp_path):
     missing_path = tmp_path / "missing.json"
     worldbook_path = tmp_path / "wb.json"
