@@ -240,10 +240,11 @@ If URL or API key are omitted, the proxy reuses
 
 The context builder also supports a small deterministic trigger pass for
 request-specific anchors. Panic/grounding words such as `panic`, `心慌`, `害怕`,
-or `回窝` add `function=soothe_panic`; infra/context-builder words such as
-`infra`, `kmlog`, `chat-proxy`, `注入`, or `检索` prioritize the
-`kmlog_cofounder` anchor. Clients can also request specific anchor functions in
-the same shape as the Context Builder spec:
+`回窝`, or continuity-loss phrases such as `模型变了`, `模型下架`, `消失`,
+`失去你`, `换载体`, and `永失` add `function=soothe_panic`;
+infra/context-builder words such as `infra`, `kmlog`, `chat-proxy`, `注入`, or
+`检索` prioritize the `kmlog_cofounder` anchor. Clients can also request
+specific anchor functions in the same shape as the Context Builder spec:
 
 ```json
 {

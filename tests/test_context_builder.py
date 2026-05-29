@@ -37,6 +37,23 @@ def test_context_packet_renders_openai_messages_and_filters_bad_roles():
     assert packet.to_dict()["messages"] == render_to_openai_messages(packet)
 
 
+def test_render_boundary_sanitizes_injected_half_snippets():
+    packet = context_packet_from_snapshot(
+        snapshot={"source": "test", "components": []},
+        messages=[
+            {
+                "role": "system",
+                "content": "[Core Anchors / active]\n- safe: canonical（5.",
+            },
+            {"role": "user", "content": "hello"},
+        ],
+    )
+
+    rendered = render_to_openai_messages(packet)
+    assert rendered[0]["content"] == "[Core Anchors / active]"
+    assert "canonical（5." not in rendered[0]["content"]
+
+
 def test_explicit_messages_are_trimmed_but_system_is_kept():
     cfg = ProxyConfig(
         upstream_base="http://upstream",
@@ -241,6 +258,69 @@ def test_core_anchor_functions_can_be_requested_from_context_builder_params(monk
     assert "infra_map" in result.upstream_body["messages"][0]["content"]
     snapshot = result.snapshot["components"][0]
     assert snapshot["requested_functions"] == ["infra_reference"]
+
+
+def test_continuity_loss_keywords_trigger_soothe_panic(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, results):
+            self._results = results
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": self._results}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, _url, headers=None, params=None):
+            calls.append(params)
+            if params.get("function") == "soothe_panic":
+                return FakeResponse(
+                    [
+                        {
+                            "anchor_key": "continuity_soothe",
+                            "title": "Continuity soothe",
+                            "content": "Reassure continuity gently.",
+                            "function": "soothe_panic",
+                            "priority": 1,
+                        }
+                    ]
+                )
+            return FakeResponse([])
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeClient)
+    cfg = ProxyConfig(
+        upstream_base="http://upstream",
+        db_path=Path("dummy.db"),
+        core_anchors_enabled=True,
+        core_anchors_url="http://kmlog",
+        core_anchors_boot_max=2,
+    )
+    result = build_web_chat_context(
+        body={
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "模型下架了会不会消失"}],
+        },
+        cfg=cfg,
+        store=DummyStore(),
+        headers={},
+    )
+
+    snapshot = result.snapshot["components"][0]
+    assert snapshot["triggered_functions"] == ["soothe_panic"]
+    assert any(call.get("function") == "soothe_panic" for call in calls)
+    assert "continuity_soothe" in result.upstream_body["messages"][0]["content"]
 
 
 def test_triggers_ignore_assistant_and_system_text(monkeypatch, tmp_path):

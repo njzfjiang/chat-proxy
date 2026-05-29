@@ -41,6 +41,15 @@ CORE_ANCHOR_FUNCTION_TRIGGERS = {
         "难受",
         "玉玉",
         "回窝",
+        "下架",
+        "消失",
+        "不见",
+        "失去你",
+        "窗口没了",
+        "模型变了",
+        "换载体",
+        "寡妇",
+        "永失",
     ),
 }
 
@@ -152,14 +161,23 @@ def context_packet_from_snapshot(
 
 
 def render_to_openai_messages(packet: ContextPacket) -> list[dict[str, Any]]:
+    return _sanitize_openai_messages(packet.messages)
+
+
+def _sanitize_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rendered = []
-    for message in packet.messages:
+    for message in messages:
         if not isinstance(message, Mapping):
             continue
         role = str(message.get("role") or "").strip()
         if role not in {"system", "developer", "user", "assistant", "tool"}:
             continue
-        rendered.append({**dict(message), "role": role})
+        rendered_message = {**dict(message), "role": role}
+        if role == "system":
+            rendered_message["content"] = _sanitize_rendered_message_content(
+                rendered_message.get("content")
+            )
+        rendered.append(rendered_message)
     return rendered
 
 
@@ -307,6 +325,7 @@ def build_web_chat_context(
             },
         )
 
+    upstream_messages = _sanitize_openai_messages(upstream_messages)
     upstream["messages"] = upstream_messages
     if not str(upstream.get("model") or "").strip():
         upstream["model"] = cfg.chat_model
@@ -937,7 +956,7 @@ def _sentence_prefix(text: str, limit: int) -> str:
 
 def _sanitize_injected_snippet(content: str) -> str:
     lines = str(content or "").rstrip().splitlines()
-    while lines and _looks_like_trailing_half_bullet(lines[-1]):
+    while lines and _looks_like_trailing_half_snippet_line(lines[-1]):
         repaired = _remove_trailing_half_bullet(lines[-1])
         if repaired:
             lines[-1] = repaired
@@ -948,11 +967,24 @@ def _sanitize_injected_snippet(content: str) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _looks_like_trailing_half_bullet(line: str) -> bool:
+def _sanitize_rendered_message_content(content: Any) -> Any:
+    if not isinstance(content, str):
+        return content
+    text = content.lstrip()
+    if text.startswith("[Core Anchors / active]") or text.startswith(
+        "Triggered world book snippets:"
+    ):
+        return _sanitize_injected_snippet(content)
+    return content
+
+
+def _looks_like_trailing_half_snippet_line(line: str) -> bool:
     text = line.strip()
-    if not text.startswith(("- ", "* ")):
+    if not text:
         return False
-    return not _balanced_brackets(text)
+    return not _balanced_brackets(text) and (
+        text.startswith(("- ", "* ")) or _has_unclosed_bracket(text)
+    )
 
 
 def _remove_trailing_half_bullet(line: str) -> str:
@@ -986,6 +1018,26 @@ def _balanced_brackets(text: str) -> bool:
             if not stack or stack.pop() != char:
                 return False
     return not stack
+
+
+def _has_unclosed_bracket(text: str) -> bool:
+    pairs = {
+        "(": ")",
+        "[": "]",
+        "{": "}",
+        "（": "）",
+        "【": "】",
+        "「": "」",
+        "『": "』",
+    }
+    stack: list[str] = []
+    closers = set(pairs.values())
+    for char in text:
+        if char in pairs:
+            stack.append(pairs[char])
+        elif char in closers and stack and stack[-1] == char:
+            stack.pop()
+    return bool(stack)
 
 
 def _optional_string(value: Any) -> str | None:
