@@ -420,3 +420,102 @@ def test_worldbook_uses_compact_summary_and_structured_warnings(tmp_path):
     assert "Compact WB sentence." in content
     assert "Another sentence" not in content
     assert "Long original content" not in content
+
+
+def test_worldbook_ascii_keywords_use_token_boundaries(tmp_path):
+    worldbook_path = tmp_path / "wb.json"
+    worldbook_path.write_text(
+        """
+{
+  "entries": [
+    {
+      "id": "review",
+      "name": "Review",
+      "keywords": ["review"],
+      "content": "Only a standalone review should trigger."
+    }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    cfg = ProxyConfig(
+        upstream_base="http://upstream",
+        db_path=Path("dummy.db"),
+        worldbook_enabled=True,
+        worldbook_paths=(worldbook_path,),
+    )
+    preview_result = build_web_chat_context(
+        body={
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "please preview this"}],
+        },
+        cfg=cfg,
+        store=DummyStore(),
+        headers={},
+    )
+    review_result = build_web_chat_context(
+        body={
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "please review this"}],
+        },
+        cfg=cfg,
+        store=DummyStore(),
+        headers={},
+    )
+
+    preview_wb = next(
+        item
+        for item in preview_result.snapshot["components"]
+        if item["name"] == "wb_snippets"
+    )
+    review_wb = next(
+        item
+        for item in review_result.snapshot["components"]
+        if item["name"] == "wb_snippets"
+    )
+    assert preview_wb["message_count"] == 0
+    assert preview_wb["trigger_matches"] == []
+    assert review_wb["message_count"] == 1
+    assert review_wb["trigger_matches"][0]["keyword"] == "review"
+    assert review_wb["trigger_matches"][0]["span"] == [7, 13]
+    assert "please review this" in review_wb["trigger_matches"][0]["excerpt"]
+
+
+def test_injected_snippets_drop_trailing_half_bullets(tmp_path):
+    worldbook_path = tmp_path / "wb.json"
+    worldbook_path.write_text(
+        """
+{
+  "entries": [
+    {
+      "id": "tool",
+      "name": "Tool",
+      "keywords": ["tool"],
+      "compact_summary": "- done（5）. - tool（5.",
+      "content": "Ignored."
+    }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    cfg = ProxyConfig(
+        upstream_base="http://upstream",
+        db_path=Path("dummy.db"),
+        worldbook_enabled=True,
+        worldbook_paths=(worldbook_path,),
+    )
+    result = build_web_chat_context(
+        body={
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "tool"}],
+        },
+        cfg=cfg,
+        store=DummyStore(),
+        headers={},
+    )
+
+    content = result.upstream_body["messages"][0]["content"]
+    assert "- done（5）." in content
+    assert "- tool（5." not in content

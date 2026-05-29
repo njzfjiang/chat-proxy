@@ -148,10 +148,12 @@ layers from retrieved-but-not-injected layers, so preview retrieval can be
 inspected without confusing it for prompt cost. Trigger debug includes
 `trigger_input_sources`; Core Anchor and World Book triggers only scan the
 current user/task text and recent user turns, not assistant/system text or
-already-injected context. The endpoint is preview-only: it does not call the
-LLM, persist turns, or update summaries. `chatlog_history` and `health_data`
-are noted in debug if requested, but they are not implemented in this thin
-preview endpoint yet.
+already-injected context. ASCII trigger keywords use token-boundary matching, so
+`review` does not match `preview`; World Book debug also includes
+`trigger_matches` with the matched keyword and input span. The endpoint is
+preview-only: it does not call the LLM, persist turns, or update summaries.
+`chatlog_history` and `health_data` are noted in debug if requested, but they
+are not implemented in this thin preview endpoint yet.
 
 For Context Builder-shaped requests, `mode`, `locale`, `runtime_prefs`,
 `task_hint`, `guardrails`, and `timestamp` are rendered as a compact

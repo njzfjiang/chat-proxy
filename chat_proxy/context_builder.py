@@ -476,7 +476,9 @@ def _core_anchor_messages(
     if not blocks:
         return [], snapshot
 
-    content = "[Core Anchors / active]\n" + "\n".join(blocks)
+    content = _sanitize_injected_snippet("[Core Anchors / active]\n" + "\n".join(blocks))
+    if not content.strip() or content.strip() == "[Core Anchors / active]":
+        return [], snapshot
     snapshot.update(
         {
             "message_count": 1,
@@ -548,9 +550,31 @@ def _requested_core_anchor_functions(body: Mapping[str, Any]) -> list[str]:
 
 def _first_trigger_match(haystack: str, triggers: tuple[str, ...]) -> str | None:
     for trigger in triggers:
-        if trigger.lower() in haystack:
+        if _keyword_match(haystack, trigger) is not None:
             return trigger
     return None
+
+
+def _keyword_match(
+    text: str,
+    keyword: str,
+    *,
+    case_sensitive: bool = False,
+) -> re.Match[str] | None:
+    keyword = str(keyword or "").strip()
+    if not keyword:
+        return None
+    if _is_ascii_keyword(keyword):
+        pattern = rf"(?<![A-Za-z0-9_]){re.escape(keyword)}(?![A-Za-z0-9_])"
+        flags = 0 if case_sensitive else re.IGNORECASE
+        return re.search(pattern, text, flags=flags)
+    if case_sensitive:
+        return re.search(re.escape(keyword), text)
+    return re.search(re.escape(keyword), text)
+
+
+def _is_ascii_keyword(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_ -]+", value))
 
 
 def _dedupe_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -715,6 +739,7 @@ def _worldbook_messages(
         "message_count": 0,
         "items": [],
         "warnings": [],
+        "trigger_matches": [],
         "trigger_input_sources": trigger_input_sources,
         "chars": 0,
     }
@@ -748,6 +773,9 @@ def _worldbook_messages(
         match
         for entry in entries
         if (match := _match_worldbook_entry(entry, scan_text)) is not None
+    ]
+    snapshot["trigger_matches"] = [
+        _worldbook_trigger_match_snapshot(match) for match in matches
     ]
     matches.sort(
         key=lambda item: (
@@ -795,7 +823,11 @@ def _worldbook_messages(
 
     if not blocks:
         return [], snapshot
-    content = "Triggered world book snippets:\n\n" + "\n\n".join(blocks)
+    content = _sanitize_injected_snippet(
+        "Triggered world book snippets:\n\n" + "\n\n".join(blocks)
+    )
+    if not content.strip() or content.strip() == "Triggered world book snippets:":
+        return [], snapshot
     snapshot.update(
         {
             "message_count": 1,
@@ -903,6 +935,59 @@ def _sentence_prefix(text: str, limit: int) -> str:
     return best
 
 
+def _sanitize_injected_snippet(content: str) -> str:
+    lines = str(content or "").rstrip().splitlines()
+    while lines and _looks_like_trailing_half_bullet(lines[-1]):
+        repaired = _remove_trailing_half_bullet(lines[-1])
+        if repaired:
+            lines[-1] = repaired
+            break
+        lines.pop()
+        while lines and not lines[-1].strip():
+            lines.pop()
+    return "\n".join(lines).rstrip()
+
+
+def _looks_like_trailing_half_bullet(line: str) -> bool:
+    text = line.strip()
+    if not text.startswith(("- ", "* ")):
+        return False
+    return not _balanced_brackets(text)
+
+
+def _remove_trailing_half_bullet(line: str) -> str:
+    text = line.rstrip()
+    for marker in (" - ", " * "):
+        index = text.rfind(marker)
+        if index <= 0:
+            continue
+        candidate = text[:index].rstrip()
+        if _balanced_brackets(candidate):
+            return candidate
+    return ""
+
+
+def _balanced_brackets(text: str) -> bool:
+    pairs = {
+        "(": ")",
+        "[": "]",
+        "{": "}",
+        "（": "）",
+        "【": "】",
+        "「": "」",
+        "『": "』",
+    }
+    stack: list[str] = []
+    closers = set(pairs.values())
+    for char in text:
+        if char in pairs:
+            stack.append(pairs[char])
+        elif char in closers:
+            if not stack or stack.pop() != char:
+                return False
+    return not stack
+
+
 def _optional_string(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
@@ -987,19 +1072,53 @@ def _match_worldbook_entry(
         return None
     case_sensitive = entry.get("caseSensitive") is True
     use_regex = entry.get("useRegex") is True
-    haystack = scan_text if case_sensitive else scan_text.lower()
     for raw_keyword in keywords:
         keyword = str(raw_keyword or "").strip()
         if not keyword:
             continue
-        needle = keyword if case_sensitive else keyword.lower()
         if use_regex:
             flags = 0 if case_sensitive else re.IGNORECASE
             try:
-                if re.search(keyword, scan_text, flags=flags):
-                    return {"entry": entry, "keyword": keyword}
+                match = re.search(keyword, scan_text, flags=flags)
             except re.error:
                 continue
-        elif needle in haystack:
-            return {"entry": entry, "keyword": keyword}
+            if match:
+                return {
+                    "entry": entry,
+                    "keyword": keyword,
+                    "span": [match.start(), match.end()],
+                    "excerpt": _match_excerpt(scan_text, match.start(), match.end()),
+                }
+        elif match := _keyword_match(
+            scan_text,
+            keyword,
+            case_sensitive=case_sensitive,
+        ):
+            return {
+                "entry": entry,
+                "keyword": keyword,
+                "span": [match.start(), match.end()],
+                "excerpt": _match_excerpt(scan_text, match.start(), match.end()),
+            }
     return None
+
+
+def _worldbook_trigger_match_snapshot(match: Mapping[str, Any]) -> dict[str, Any]:
+    entry = match.get("entry")
+    entry_id = entry.get("id") if isinstance(entry, Mapping) else None
+    entry_name = entry.get("name") if isinstance(entry, Mapping) else None
+    return {
+        "target_type": "worldbook",
+        "target": entry_id or entry_name,
+        "entry_id": entry_id,
+        "entry_name": entry_name,
+        "keyword": match.get("keyword"),
+        "span": match.get("span"),
+        "excerpt": match.get("excerpt"),
+    }
+
+
+def _match_excerpt(text: str, start: int, end: int) -> str:
+    before = max(0, start - 24)
+    after = min(len(text), end + 24)
+    return text[before:after].replace("\n", " ").strip()
