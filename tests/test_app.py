@@ -1247,6 +1247,160 @@ async def test_web_chat_injects_matching_worldbook_snippets(
 
 
 @pytest.mark.anyio
+async def test_build_context_previews_messages_without_calling_upstream(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            chat_model="backend-chat-model",
+            chat_recent_k=2,
+        )
+    )
+    older_message_id = app.state.store.insert_message(
+        timestamp="2026-05-18T00:00:00Z",
+        role="user",
+        content="older context",
+        conversation_title="kai",
+        conversation_id="preview-chat",
+        message_id="preview-old-user",
+    )
+    app.state.store.upsert_summary(
+        conversation_id="preview-chat",
+        summary="Preview rolling summary.",
+        last_message_id=None,
+        updated_at="2026-05-18T00:00:01Z",
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/build_context",
+            json={
+                "client_id": "phone-1",
+                "conversation_id": "preview-chat",
+                "assistant_key": "kai",
+                "user_text": "new preview text",
+            },
+        )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["messages"] == [
+        {
+            "role": "system",
+            "content": "Rolling summary of this conversation so far:\nPreview rolling summary.",
+        },
+        {"role": "user", "content": "older context"},
+        {"role": "user", "content": "new preview text"},
+    ]
+    assert payload["debug"]["included_layers"] == [
+        "rolling_short",
+        "recent_turns",
+        "current_user",
+    ]
+    assert payload["debug"]["source_ids"]["recent_turns"] == [
+        f"message:{older_message_id}"
+    ]
+    assert payload["debug"]["source_ids"]["rolling_short"] == ["rolling_summary:1"]
+    assert payload["context_packet"]["mode"] == "db_recent_turns"
+    assert payload["context_packet"]["messages"] == payload["messages"]
+    assert payload["context_packet"]["final_message_count"] == 3
+    conn = sqlite3.connect(db_path)
+    request_count = conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+    message_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    conn.close()
+    assert request_count == 0
+    assert message_count == 1
+
+
+@pytest.mark.anyio
+async def test_build_context_accepts_context_builder_request_shape(tmp_path):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/build_context",
+            json={
+                "user_id": "Mei",
+                "conversation_id": "spec-chat",
+                "frontend": "open_webui",
+                "mode": "infra",
+                "locale": "zh-CN",
+                "runtime_prefs": {"language": "zh-en-mix", "tone": "ta"},
+                "task_hint": "preview the context builder",
+                "guardrails": {
+                    "low_cognitive_load": True,
+                    "no_new_big_todos": True,
+                },
+                "timestamp": "2026-05-29T12:32:00-04:00",
+                "tools_policy": {
+                    "expose_tools": True,
+                    "allowed_tool_groups": ["context_read", "memory_write"],
+                    "write_requires_confirmation": True,
+                    "tool_mode": "read_only",
+                },
+                "recent_turns": [
+                    {"role": "user", "content": "old spec turn"},
+                    {"role": "assistant", "content": "old answer"},
+                    {"role": "user", "content": "current spec turn"},
+                ],
+                "include": {
+                    "worldbook": False,
+                    "core_anchors": False,
+                    "rolling_summary": False,
+                },
+            },
+        )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["messages"] == [
+        {
+            "role": "system",
+            "content": (
+                "[Runtime Hints]\n"
+                "- mode: infra\n"
+                "- locale: zh-CN\n"
+                "- timestamp: 2026-05-29T12:32:00-04:00\n"
+                "- task_hint: preview the context builder\n"
+                "- runtime_prefs: language=zh-en-mix, tone=ta\n"
+                "- guardrails: low_cognitive_load=True, no_new_big_todos=True"
+            ),
+        },
+        {"role": "user", "content": "old spec turn"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "current spec turn"},
+    ]
+    assert payload["debug"]["mode"] == "explicit_messages"
+    assert payload["context_packet"]["messages"] == payload["messages"]
+    assert payload["debug"]["source_ids"]["explicit_messages"] == []
+    assert "Request was normalized" in payload["debug"]["notes"][1]
+    assert payload["debug"]["request_meta"]["mode"] == "infra"
+    assert payload["debug"]["request_meta"]["guardrails"] == {
+        "low_cognitive_load": True,
+        "no_new_big_todos": True,
+    }
+    tool_context = payload["debug"]["tool_context"]
+    assert tool_context["policy"]["tool_mode"] == "read_only"
+    assert tool_context["available_tool_groups"] == ["context_read"]
+    assert all(
+        tool["mutates_state"] is False for tool in tool_context["available_tools"]
+    )
+    assert "get_core_anchors" in {
+        tool["name"] for tool in tool_context["available_tools"]
+    }
+
+
+@pytest.mark.anyio
 async def test_web_chat_retrieves_kmlog_without_injecting_until_enabled(
     tmp_path, upstream_app, monkeypatch
 ):

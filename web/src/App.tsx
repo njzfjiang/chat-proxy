@@ -127,6 +127,35 @@ type RequestTrace = {
   error_text: string | null;
 };
 
+type ContextPreviewMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  meta?: Record<string, unknown>;
+};
+
+type ContextPreview = {
+  messages: ContextPreviewMessage[];
+  debug?: {
+    included_layers?: string[];
+    token_estimates?: {
+      total?: number;
+      by_layer?: Record<string, number>;
+    };
+    notes?: string[];
+    mode?: string | null;
+    model?: string | null;
+    source?: string | null;
+    request_meta?: Record<string, unknown>;
+    tool_context?: {
+      available_tool_groups?: string[];
+      available_tools?: Array<Record<string, unknown>>;
+      policy_notes?: string[];
+      policy?: Record<string, unknown>;
+    };
+  };
+  context_packet?: TraceSnapshot | null;
+};
+
 const CLIENT_KEY = "chatProxyWeb.clientId";
 const CONVERSATION_KEY = "chatProxyWeb.conversationId";
 const MODEL_KEY = "chatProxyWeb.model";
@@ -175,8 +204,11 @@ export function App() {
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
   const [trace, setTrace] = useState<RequestTrace | null>(null);
   const [traceLoading, setTraceLoading] = useState(false);
+  const [contextPreview, setContextPreview] = useState<ContextPreview | null>(null);
+  const [contextPreviewLoading, setContextPreviewLoading] = useState(false);
   const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({
     daily: true,
+    preview: false,
     rolling: true
   });
   const [failedSend, setFailedSend] = useState<{
@@ -587,6 +619,50 @@ export function App() {
     };
   }
 
+  function contextPreviewPayload() {
+    const text =
+      draft.trim() ||
+      [...messages].reverse().find((message) => message.role === "user")?.content.trim() ||
+      "Preview current context.";
+    const conversationId =
+      activeConversationId || `preview_${clientId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+    const payload = chatPayload(conversationId, text);
+    return {
+      ...payload,
+      request_id: undefined,
+      stream: undefined,
+      stream_options: undefined,
+      tools_policy: {
+        expose_tools: true,
+        allowed_tool_groups: ["context_read"],
+        write_requires_confirmation: true,
+        tool_mode: "read_only"
+      }
+    };
+  }
+
+  async function previewContext() {
+    if (contextPreviewLoading) {
+      return;
+    }
+    setInspectorOpen(true);
+    setCollapsedPanels((current) => ({ ...current, preview: false }));
+    setContextPreviewLoading(true);
+    setError(null);
+    try {
+      setContextPreview(
+        await requestJson<ContextPreview>("/build_context", {
+          method: "POST",
+          body: JSON.stringify(contextPreviewPayload())
+        })
+      );
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setContextPreviewLoading(false);
+    }
+  }
+
   async function copyMessage(message: ChatMessage) {
     await navigator.clipboard.writeText(message.content);
     setCopiedMessageId(message.id);
@@ -691,33 +767,35 @@ export function App() {
       </aside>
 
       <main className="main-pane">
-        <header className="topbar">
-          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open conversations">
-            <Menu size={19} />
-          </button>
-          <div className="title-block">
-            <p className="eyebrow">{activeConversationId || "No conversation selected"}</p>
-            <h2>{activeConversation?.title || activeConversation?.assistant_key || "Kelivo Web"}</h2>
-          </div>
-          <div className="status-pill">
-            {sending ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
-            <span>{sending ? "Sending" : "Ready"}</span>
-          </div>
-          <button className="icon-button mobile-only" onClick={() => setInspectorOpen(true)} aria-label="Open route and summaries">
-            <Settings2 size={18} />
-          </button>
-        </header>
+        <div className="top-stack">
+          <header className="topbar">
+            <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open conversations">
+              <Menu size={19} />
+            </button>
+            <div className="title-block">
+              <p className="eyebrow">{activeConversationId || "No conversation selected"}</p>
+              <h2>{activeConversation?.title || activeConversation?.assistant_key || "Kelivo Web"}</h2>
+            </div>
+            <div className="status-pill">
+              {sending ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+              <span>{sending ? "Sending" : "Ready"}</span>
+            </div>
+            <button className="icon-button mobile-only" onClick={() => setInspectorOpen(true)} aria-label="Open route and summaries">
+              <Settings2 size={18} />
+            </button>
+          </header>
 
-        {error && (
-          <div className="error-strip">
-            <span>{error}</span>
-            {failedSend && (
-              <button onClick={retryFailedSend} disabled={sending}>
-                Retry
-              </button>
-            )}
-          </div>
-        )}
+          {error && (
+            <div className="error-strip">
+              <span>{error}</span>
+              {failedSend && (
+                <button onClick={retryFailedSend} disabled={sending}>
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+        </div>
 
         <section className="chat-grid">
           <div className="message-pane">
@@ -897,6 +975,33 @@ export function App() {
               </div>
             </section>
 
+            <section className={`summary-panel preview-panel ${collapsedPanels.preview ? "collapsed" : ""}`}>
+              <div className="panel-head">
+                <button
+                  className="panel-title-button"
+                  onClick={() => togglePanel("preview")}
+                  type="button"
+                  aria-expanded={!collapsedPanels.preview}
+                >
+                  <FileSearch size={17} />
+                  <h3>Context</h3>
+                  <ChevronDown size={15} />
+                </button>
+                <button
+                  className="panel-action compact-action"
+                  disabled={contextPreviewLoading}
+                  onClick={() => void previewContext()}
+                  type="button"
+                >
+                  {contextPreviewLoading ? <Loader2 size={14} className="spin" /> : <RefreshCcw size={14} />}
+                  <span>Preview</span>
+                </button>
+              </div>
+              <div className="panel-content" hidden={collapsedPanels.preview}>
+                <ContextPreviewPanel preview={contextPreview} loading={contextPreviewLoading} />
+              </div>
+            </section>
+
             <section className={`summary-panel trace-panel ${collapsedPanels.trace ? "collapsed" : ""}`}>
               <div className="panel-head">
                 <button
@@ -1019,6 +1124,126 @@ export function App() {
       </main>
     </div>
   );
+}
+
+function ContextPreviewPanel({
+  preview,
+  loading
+}: {
+  preview: ContextPreview | null;
+  loading: boolean;
+}) {
+  if (loading && !preview) {
+    return <div className="summary-text muted">Building context preview...</div>;
+  }
+  if (!preview) {
+    return (
+      <div className="summary-text muted">
+        Preview the exact context packet for the current draft and route toggles.
+      </div>
+    );
+  }
+  const snapshot = preview.context_packet || null;
+  const debug = preview.debug || {};
+  return (
+    <div className="trace-body context-preview-body">
+      <div className="trace-grid compact">
+        <TraceMetric label="Messages" value={preview.messages.length} />
+        <TraceMetric label="Chars" value={snapshot?.final_chars ?? "-"} />
+        <TraceMetric label="Tokens" value={debug.token_estimates?.total ?? "-"} />
+        <TraceMetric label="Mode" value={debug.mode || "-"} />
+      </div>
+      {debug.included_layers?.length ? (
+        <div className="trace-items">
+          {debug.included_layers.map((layer) => (
+            <span key={layer}>{layer}</span>
+          ))}
+        </div>
+      ) : null}
+      {debug.request_meta && Object.keys(debug.request_meta).length ? (
+        <details className="preview-meta">
+          <summary>Request meta</summary>
+          <pre>{JSON.stringify(debug.request_meta, null, 2)}</pre>
+        </details>
+      ) : null}
+      {debug.tool_context ? (
+        <div className="trace-component">
+          <div className="trace-component-head">
+            <strong>tools_policy</strong>
+            <span>{toolPolicySummary(debug.tool_context)}</span>
+          </div>
+          {debug.tool_context.available_tool_groups?.length ? (
+            <div className="trace-items">
+              {debug.tool_context.available_tool_groups.map((group) => (
+                <span key={group}>{group}</span>
+              ))}
+            </div>
+          ) : null}
+          {debug.tool_context.available_tools?.length ? (
+            <div className="trace-items">
+              {debug.tool_context.available_tools.slice(0, 8).map((tool, index) => (
+                <span key={index}>{traceItemLabel(tool)}</span>
+              ))}
+            </div>
+          ) : null}
+          {debug.tool_context.policy_notes?.length ? (
+            <small>{debug.tool_context.policy_notes.join(" · ")}</small>
+          ) : null}
+        </div>
+      ) : null}
+      {snapshot?.components?.length ? (
+        <div className="trace-components">
+          {snapshot.components.map((component, index) => (
+            <div className="trace-component" key={`${component.name || "component"}-${index}`}>
+              <div className="trace-component-head">
+                <strong>{component.name || "component"}</strong>
+                <span>{componentSummary(component)}</span>
+              </div>
+              {component.error ? (
+                <small className="trace-component-error">{component.error}</small>
+              ) : null}
+              {component.items?.length ? (
+                <div className="trace-items">
+                  {component.items.slice(0, 5).map((item, itemIndex) => (
+                    <span key={itemIndex}>{traceItemLabel(item)}</span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="preview-messages">
+        {preview.messages.map((message, index) => (
+          <details key={`${message.role}-${index}`}>
+            <summary>
+              <span>{index + 1}</span>
+              <strong>{message.role}</strong>
+              <small>{message.content.length} chars</small>
+            </summary>
+            <pre>{message.content}</pre>
+          </details>
+        ))}
+      </div>
+      {debug.notes?.length ? (
+        <div className="summary-text muted">
+          {debug.notes.map((note) => (
+            <p key={note}>{note}</p>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function toolPolicySummary(toolContext: NonNullable<ContextPreview["debug"]>["tool_context"]) {
+  const policy = toolContext?.policy || {};
+  const parts = [
+    policy.tool_mode ? `mode ${String(policy.tool_mode)}` : null,
+    policy.expose_tools ? "exposed" : "hidden",
+    policy.write_requires_confirmation ? "confirm writes" : null
+  ].filter(Boolean);
+  return parts.join(" · ") || "-";
 }
 
 function TracePanel({ trace, loading }: { trace: RequestTrace | null; loading: boolean }) {

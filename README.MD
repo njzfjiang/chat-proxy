@@ -81,6 +81,94 @@ The model, provider API key, and default provider key belong on the backend via
 `provider_key` as explicit overrides, but they should never store provider API
 keys. `system_prompt` is inserted only into the current upstream request.
 
+To inspect context without calling the upstream model or writing a request row,
+use:
+
+```http
+POST /build_context
+```
+
+It accepts the same web-chat shape:
+
+```json
+{
+  "client_id": "phone-uuid",
+  "conversation_id": "conversation-uuid",
+  "assistant_key": "kai",
+  "user_text": "hello"
+}
+```
+
+It also accepts the early Context Builder spec shape:
+
+```json
+{
+  "user_id": "Mei",
+  "conversation_id": "conversation-uuid",
+  "frontend": "open_webui",
+  "mode": "infra",
+  "runtime_prefs": {
+    "language": "zh-en-mix",
+    "verbosity": "normal",
+    "tone": "ta"
+  },
+  "task_hint": "preview current context",
+  "guardrails": {
+    "low_cognitive_load": true,
+    "no_new_big_todos": true
+  },
+  "timestamp": "2026-05-29T12:32:00-04:00",
+  "tools_policy": {
+    "expose_tools": true,
+    "allowed_tool_groups": ["context_read"],
+    "write_requires_confirmation": true,
+    "tool_mode": "read_only"
+  },
+  "recent_turns": [
+    {"role": "user", "content": "current task"}
+  ],
+  "include": {
+    "worldbook": true,
+    "core_anchors": true,
+    "rolling_summary": true
+  },
+  "params": {
+    "core_anchor_functions": ["infra_reference"]
+  }
+}
+```
+
+The response contains `messages`, a compact `debug` object, and a rendered
+`context_packet`. Internally, the packet is represented as `ContextPacket` and
+rendered through `render_to_openai_messages()`, so the top-level `messages`
+field matches the OpenAI-compatible message list inside the packet. The debug
+object includes `included_layers`, normalized `source_ids`, rough
+`token_estimates`, and `truncated` metadata. The endpoint is preview-only: it
+does not call the LLM, persist turns, or update summaries. `chatlog_history` and
+`health_data` are noted in debug if requested, but they are not implemented in
+this thin preview endpoint yet.
+
+For Context Builder-shaped requests, `mode`, `locale`, `runtime_prefs`,
+`task_hint`, `guardrails`, and `timestamp` are rendered as a compact
+`[Runtime Hints]` system message when `include.system` is not disabled. They
+also appear in `debug.request_meta` for inspection. This makes the current
+frontend optional: another client can pass the same fields directly, and a
+future custom frontend can replace those ad hoc inputs with controls.
+
+`tools_policy` is declarative only. `/build_context` does not execute action
+tools; it resolves the policy into `debug.tool_context`, including available
+tool groups, optional tool definitions, and policy notes. Supported tool modes:
+
+```text
+none
+read_only
+agent_managed
+```
+
+Use `read_only` with `allowed_tool_groups=["context_read"]` for context preview.
+State-changing tools remain agent/action-node territory and should require
+confirmation.
+
 When clients send `user_text`, the proxy builds the upstream short-context
 window from SQLite instead of trusting the browser's current view. It prepends up
 to `CHAT_PROXY_CHAT_RECENT_K` recent `chat` messages from the same
@@ -138,6 +226,24 @@ CHAT_PROXY_CORE_ANCHORS_CHARS_TOTAL=900
 
 If URL or API key are omitted, the proxy reuses
 `CHAT_PROXY_KMLOG_SEARCH_URL` and `CHAT_PROXY_KMLOG_SEARCH_API_KEY`.
+
+The context builder also supports a small deterministic trigger pass for
+request-specific anchors. Panic/grounding words such as `panic`, `心慌`, `害怕`,
+or `回窝` add `function=soothe_panic`; infra/context-builder words such as
+`infra`, `kmlog`, `chat-proxy`, `注入`, or `检索` prioritize the
+`kmlog_cofounder` anchor. Clients can also request specific anchor functions in
+the same shape as the Context Builder spec:
+
+```json
+{
+  "params": {
+    "core_anchor_functions": ["infra_reference"]
+  }
+}
+```
+
+Triggered/requested functions and matched keywords are recorded in the injected
+context snapshot for inspection.
 
 Explicit `request_id` values are idempotent: a completed duplicate replays the
 stored response, while an unfinished duplicate returns `409`.

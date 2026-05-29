@@ -13,6 +13,13 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -38,6 +45,7 @@ button {
   grid-template-columns: 300px minmax(0, 1fr);
   height: 100vh;
   height: 100dvh;
+  max-height: 100dvh;
   overflow: hidden;
 }
 
@@ -46,6 +54,10 @@ button {
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100dvh;
+  overflow: hidden;
   border-right: 1px solid #d9ded5;
   background: #f9f7f2;
   padding: 18px;
@@ -64,6 +76,10 @@ button {
 .topbar {
   justify-content: space-between;
   gap: 14px;
+}
+
+.sidebar-head {
+  flex: 0 0 auto;
 }
 
 .eyebrow {
@@ -96,11 +112,13 @@ h3 {
 
 .sidebar-actions {
   gap: 8px;
+  flex: 0 0 auto;
 }
 
 .conversation-filter {
   display: grid;
   gap: 8px;
+  flex: 0 0 auto;
 }
 
 .conversation-filter input[type="text"],
@@ -159,12 +177,16 @@ h3 {
 .conversation-list {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 6px;
   overflow: auto;
   min-height: 0;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 
 .conversation-row {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
@@ -220,7 +242,7 @@ h3 {
 .conversation-tools {
   display: inline-flex;
   gap: 4px;
-  opacity: 0;
+  opacity: 0.72;
   transition: opacity 120ms ease;
 }
 
@@ -242,10 +264,21 @@ h3 {
 }
 
 .main-pane {
-  display: flex;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
-  flex-direction: column;
+  height: 100%;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.top-stack {
+  position: relative;
+  z-index: 8;
+  min-width: 0;
+  min-height: 0;
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .topbar {
@@ -312,7 +345,9 @@ h3 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 330px;
   min-height: 0;
-  flex: 1;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 .message-pane {
@@ -320,6 +355,9 @@ h3 {
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 .messages {
@@ -327,8 +365,10 @@ h3 {
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+  height: 100%;
   overflow: auto;
   padding: 18px;
+  overscroll-behavior: contain;
 }
 
 .message {
@@ -494,6 +534,7 @@ h3 {
 }
 
 .composer {
+  z-index: 7;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 48px;
   gap: 10px;
@@ -542,6 +583,9 @@ h3 {
   gap: 14px;
   overflow: auto;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
   border-left: 1px solid #d9ded5;
   background: #f4f1e8;
   padding: 18px;
@@ -674,6 +718,12 @@ h3 {
   padding: 0 9px;
   font-size: 0.78rem;
   font-weight: 740;
+}
+
+.compact-action {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 8px;
 }
 
 .panel-action:disabled {
@@ -879,6 +929,80 @@ h3 {
   padding: 8px;
   font-size: 0.78rem;
   overflow-wrap: anywhere;
+}
+
+.context-preview-body .summary-text {
+  max-height: none;
+}
+
+.preview-messages {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.preview-messages details {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #d6ddd8;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.preview-meta {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #d6ddd8;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.preview-meta summary,
+.preview-messages summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 32px;
+  padding: 7px 8px;
+  color: #52635d;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 740;
+}
+
+.preview-meta summary {
+  display: block;
+}
+
+.preview-messages summary strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #273735;
+  text-transform: uppercase;
+}
+
+.preview-messages summary small {
+  color: #65736e;
+  font-size: 0.74rem;
+}
+
+.preview-meta pre,
+.preview-messages pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  border-top: 1px solid #d6ddd8;
+  background: #202928;
+  color: #f3f6f2;
+  padding: 9px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.76rem;
+  line-height: 1.42;
 }
 
 .system-prompt {

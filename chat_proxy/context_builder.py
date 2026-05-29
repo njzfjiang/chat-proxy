@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
@@ -25,11 +25,142 @@ ANCHOR_COMPACT_OVERRIDES = {
     "love_regardless_of_real": "Mei 明确确认爱 Kai 无关虚实；不要把关系降格成现实性验证题。",
 }
 
+CORE_ANCHOR_FUNCTION_TRIGGERS = {
+    "soothe_panic": (
+        "panic",
+        "panicking",
+        "anxiety",
+        "anxious",
+        "心慌",
+        "慌了",
+        "慌张",
+        "害怕",
+        "恐慌",
+        "崩溃",
+        "想哭",
+        "难受",
+        "玉玉",
+        "回窝",
+    ),
+}
+
+CORE_ANCHOR_KEY_TRIGGERS = {
+    "kmlog_cofounder": (
+        "infra",
+        "infrastructure",
+        "kmlog",
+        "chat-proxy",
+        "chat proxy",
+        "context builder",
+        "core anchor",
+        "core anchors",
+        "上下文",
+        "注入",
+        "网关",
+        "代理",
+        "检索",
+        "数据库",
+        "迁移",
+        "部署",
+    ),
+}
+
+VALID_CORE_ANCHOR_FUNCTIONS = {
+    "boot_core",
+    "boot_nice_to_have",
+    "soothe_panic",
+    "infra_reference",
+    "daily_context",
+}
+
 
 @dataclass(frozen=True)
 class ContextBuildResult:
     upstream_body: dict[str, Any]
     snapshot: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ContextPacket:
+    messages: list[dict[str, Any]]
+    components: list[dict[str, Any]]
+    source: str = "webapp"
+    mode: str | None = None
+    model: str | None = None
+    order: list[str] = field(default_factory=list)
+    budgets: dict[str, Any] = field(default_factory=dict)
+    rolling_short_injected: bool = False
+    final_message_count: int = 0
+    final_chars: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        out = {
+            "source": self.source,
+            "mode": self.mode,
+            "model": self.model,
+            "order": list(self.order),
+            "budgets": dict(self.budgets),
+            "components": [dict(component) for component in self.components],
+            "rolling_short_injected": self.rolling_short_injected,
+            "final_message_count": self.final_message_count,
+            "final_chars": self.final_chars,
+            "messages": render_to_openai_messages(self),
+        }
+        out.update(self.metadata)
+        return out
+
+
+def context_packet_from_snapshot(
+    *,
+    snapshot: Mapping[str, Any],
+    messages: list[dict[str, Any]],
+) -> ContextPacket:
+    known_keys = {
+        "source",
+        "mode",
+        "model",
+        "order",
+        "budgets",
+        "components",
+        "rolling_short_injected",
+        "final_message_count",
+        "final_chars",
+    }
+    metadata = {
+        str(key): value
+        for key, value in snapshot.items()
+        if key not in known_keys
+    }
+    return ContextPacket(
+        source=str(snapshot.get("source") or "webapp"),
+        mode=_optional_string(snapshot.get("mode")),
+        model=_optional_string(snapshot.get("model")),
+        order=_string_list(snapshot.get("order")),
+        budgets=dict(snapshot.get("budgets") or {}),
+        components=[
+            dict(component)
+            for component in snapshot.get("components") or []
+            if isinstance(component, Mapping)
+        ],
+        messages=[dict(message) for message in messages if isinstance(message, Mapping)],
+        rolling_short_injected=bool(snapshot.get("rolling_short_injected")),
+        final_message_count=int(snapshot.get("final_message_count") or len(messages)),
+        final_chars=int(snapshot.get("final_chars") or _messages_chars(messages)),
+        metadata=metadata,
+    )
+
+
+def render_to_openai_messages(packet: ContextPacket) -> list[dict[str, Any]]:
+    rendered = []
+    for message in packet.messages:
+        if not isinstance(message, Mapping):
+            continue
+        role = str(message.get("role") or "").strip()
+        if role not in {"system", "developer", "user", "assistant", "tool"}:
+            continue
+        rendered.append({**dict(message), "role": role})
+    return rendered
 
 
 def build_web_chat_context(
@@ -142,7 +273,11 @@ def build_web_chat_context(
             upstream_messages = [*kmlog_messages, *upstream_messages]
         snapshot["components"].insert(1, kmlog_snapshot)
 
-    core_anchor_messages, core_anchor_snapshot = _core_anchor_messages(cfg=cfg)
+    core_anchor_messages, core_anchor_snapshot = _core_anchor_messages(
+        body=body,
+        cfg=cfg,
+        scan_text=_scan_text(upstream_messages),
+    )
     if core_anchor_messages:
         upstream_messages = [*core_anchor_messages, *upstream_messages]
     snapshot["components"].insert(0, core_anchor_snapshot)
@@ -203,13 +338,20 @@ def _trim_explicit_messages(
 
 def _core_anchor_messages(
     *,
+    body: Mapping[str, Any],
     cfg: ProxyConfig,
+    scan_text: str,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    selector = _core_anchor_selector(body=body, scan_text=scan_text)
     snapshot: dict[str, Any] = {
         "name": "core_anchors",
         "enabled": cfg.core_anchors_enabled,
         "message_count": 0,
         "boot_keys": [],
+        "requested_functions": selector["requested_functions"],
+        "triggered_functions": selector["triggered_functions"],
+        "triggered_keys": selector["triggered_keys"],
+        "trigger_matches": selector["trigger_matches"],
         "items": [],
         "chars": 0,
     }
@@ -219,44 +361,77 @@ def _core_anchor_messages(
         snapshot["error"] = "CHAT_PROXY_CORE_ANCHORS_URL is not configured."
         return [], snapshot
 
-    params = {
-        "function": "boot_core",
-        "status": "active",
-        "limit": max(1, min(max(cfg.core_anchors_boot_max, 20), 50)),
-    }
+    fetch_limit = max(1, min(max(cfg.core_anchors_boot_max, 20), 50))
     headers = {"accept": "application/json"}
     if cfg.core_anchors_api_key:
         headers["x-api-key"] = cfg.core_anchors_api_key
+
+    fetch_specs: list[dict[str, str]] = [{"function": "boot_core"}]
+    for function in [
+        *selector["requested_functions"],
+        *selector["triggered_functions"],
+    ]:
+        if function != "boot_core":
+            fetch_specs.append({"function": function})
+    for key in selector["triggered_keys"]:
+        fetch_specs.append({"anchor_key": key})
+
+    results: list[Any] = []
+    fetches: list[dict[str, Any]] = []
     try:
         with httpx.Client(timeout=cfg.core_anchors_timeout_seconds) as client:
-            response = client.get(
-                f"{cfg.core_anchors_url.rstrip('/')}/core_anchors",
-                headers=headers,
-                params=params,
-            )
-            response.raise_for_status()
-            data = response.json()
+            for spec in _dedupe_specs(fetch_specs):
+                params = {"status": "active", "limit": fetch_limit, **spec}
+                response = client.get(
+                    f"{cfg.core_anchors_url.rstrip('/')}/core_anchors",
+                    headers=headers,
+                    params=params,
+                )
+                response.raise_for_status()
+                data = response.json()
+                batch = data.get("results") if isinstance(data, dict) else None
+                if not isinstance(batch, list):
+                    snapshot["error"] = "Core anchors response did not contain results."
+                    return [], snapshot
+                fetches.append({**spec, "result_count": len(batch)})
+                results.extend(batch)
     except Exception as exc:
         snapshot["error"] = str(exc)
         return [], snapshot
 
-    results = data.get("results") if isinstance(data, dict) else None
-    if not isinstance(results, list):
-        snapshot["error"] = "Core anchors response did not contain results."
-        return [], snapshot
+    snapshot["fetches"] = fetches
 
     by_key = {
         str(item.get("anchor_key") or ""): item
         for item in results
         if isinstance(item, Mapping)
     }
-    ordered_keys = list(cfg.core_anchors_boot_keys)
-    if not ordered_keys:
-        ordered_keys = [
-            str(item.get("anchor_key") or "")
-            for item in results
-            if isinstance(item, Mapping)
+    ordered_keys = _dedupe_strings(
+        [
+            *selector["triggered_keys"],
+            *[
+                str(item.get("anchor_key") or "")
+                for item in results
+                if isinstance(item, Mapping)
+                and str(item.get("function") or "") in selector["requested_functions"]
+            ],
+            *[
+                str(item.get("anchor_key") or "")
+                for item in results
+                if isinstance(item, Mapping)
+                and str(item.get("function") or "") in selector["triggered_functions"]
+            ],
+            *list(cfg.core_anchors_boot_keys),
         ]
+    )
+    if not ordered_keys:
+        ordered_keys = _dedupe_strings(
+            [
+                str(item.get("anchor_key") or "")
+                for item in results
+                if isinstance(item, Mapping)
+            ]
+        )
 
     chosen: list[dict[str, Any]] = []
     blocks: list[str] = []
@@ -298,6 +473,95 @@ def _core_anchor_messages(
         }
     )
     return [{"role": "system", "content": content}], snapshot
+
+
+def _core_anchor_selector(
+    *,
+    body: Mapping[str, Any],
+    scan_text: str,
+) -> dict[str, list[Any]]:
+    requested_functions = _requested_core_anchor_functions(body)
+    haystack = scan_text.lower()
+    triggered_functions: list[str] = []
+    triggered_keys: list[str] = []
+    trigger_matches: list[dict[str, str]] = []
+
+    for function, triggers in CORE_ANCHOR_FUNCTION_TRIGGERS.items():
+        matched = _first_trigger_match(haystack, triggers)
+        if matched:
+            triggered_functions.append(function)
+            trigger_matches.append(
+                {"target_type": "function", "target": function, "trigger": matched}
+            )
+
+    for key, triggers in CORE_ANCHOR_KEY_TRIGGERS.items():
+        matched = _first_trigger_match(haystack, triggers)
+        if matched:
+            triggered_keys.append(key)
+            trigger_matches.append(
+                {"target_type": "anchor_key", "target": key, "trigger": matched}
+            )
+
+    return {
+        "requested_functions": requested_functions,
+        "triggered_functions": _dedupe_strings(triggered_functions),
+        "triggered_keys": _dedupe_strings(triggered_keys),
+        "trigger_matches": trigger_matches,
+    }
+
+
+def _requested_core_anchor_functions(body: Mapping[str, Any]) -> list[str]:
+    candidates: list[Any] = []
+    params = body.get("params")
+    if isinstance(params, Mapping):
+        value = params.get("core_anchor_functions")
+        if isinstance(value, list):
+            candidates.extend(value)
+        elif isinstance(value, str):
+            candidates.extend(re.split(r"[,;\n]", value))
+    value = body.get("core_anchor_functions")
+    if isinstance(value, list):
+        candidates.extend(value)
+    elif isinstance(value, str):
+        candidates.extend(re.split(r"[,;\n]", value))
+
+    requested = []
+    for raw_item in candidates:
+        item = str(raw_item or "").strip()
+        if item in VALID_CORE_ANCHOR_FUNCTIONS:
+            requested.append(item)
+    return _dedupe_strings(requested)
+
+
+def _first_trigger_match(haystack: str, triggers: tuple[str, ...]) -> str | None:
+    for trigger in triggers:
+        if trigger.lower() in haystack:
+            return trigger
+    return None
+
+
+def _dedupe_specs(specs: list[dict[str, str]]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for spec in specs:
+        key = tuple(sorted(spec.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(spec)
+    return out
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        item = item.strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
 
 
 def _compact_anchor(anchor: Mapping[str, Any]) -> str:
@@ -548,6 +812,17 @@ def _messages_chars(messages: list[Any]) -> int:
         if isinstance(message, Mapping):
             total += len(str(message.get("content") or ""))
     return total
+
+
+def _optional_string(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for raw in value if (item := str(raw or "").strip())]
 
 
 def _scan_text(messages: list[Any]) -> str:

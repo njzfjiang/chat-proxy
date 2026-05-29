@@ -12,22 +12,28 @@ from .storage import ChatProxyStore
 SUMMARY_SYSTEM_PROMPT = (
     "Maintain a concise, semi-structured rolling summary of a chat conversation. "
     "Preserve durable facts, decisions, preferences, unresolved tasks, and "
-    "important context. Remove transient wording, remove stale details, and "
-    "avoid inventing details. Keep the whole summary under about 180 words."
+    "important context. Explicitly track current focus and near-term goals. "
+    "Remove transient wording and stale details, and avoid inventing details. "
+    "Keep the whole summary under about 220 words."
 )
+
 SUMMARY_FORMAT_INSTRUCTIONS = """Return exactly these sections:
-Now: 1-3 sentences about the current situation.
-Key context: up to 5 bullets.
-Open threads: up to 5 bullets, or "None".
-Style / protocols: up to 5 bullets.
+Now: 1-3 sentences about the current situation and what the user is doing or focusing on this session.
+Current focus & near-term goals (1–14 days): 2-6 bullets capturing concrete projects, tasks, or themes the user plans to work on soon.
+Key context: up to 5 bullets with durable facts, preferences, and background that shape how to respond.
+Open threads: up to 5 bullets, or "None", for unresolved questions, pending decisions, or follow-ups the assistant might revisit.
+Style / protocols: up to 5 bullets on interaction style, boundaries, and care/relationship protocols inferred from the conversation.
 
 Rules:
-- Keep the whole summary under about 180 words.
-- Prefer durable facts over recent phrasing.
-- Remove stale details.
+- Keep the whole summary under about 220 words.
+- Prefer durable facts and stable goals over transient phrasing.
+- Summarize near-term goals at a coarse level (project / theme + 1–2 concrete next steps if clear), not as a long todo list.
+- Remove stale or completed goals and threads as they clearly resolve.
 - Describe concrete actions, tone, and decisions; avoid re-labelling the relationship with generic kink labels (e.g. "dom/sub") or psychological diagnoses.
 - Do not introduce new category labels for the relationship; keep using the fox–cat / long-term partner framing implied by the conversation, unless the user explicitly defines another label.
+- If the conversation is mostly emotional support, still extract at least 1 bullet in 'Current focus & near-term goals' that reflects what the user cares about or may want to move on later (even if very small, like “rest” or “stabilize HP_max”).
 - Return only the updated rolling summary."""
+
 SUMMARY_INJECTION_PREFIX = "Rolling summary of this conversation so far:\n"
 
 

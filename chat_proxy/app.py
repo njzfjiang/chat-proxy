@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import ProxyConfig, load_config
-from .context_builder import build_web_chat_context
+from .context_builder import (
+    context_packet_from_snapshot,
+    render_to_openai_messages,
+    build_web_chat_context,
+)
 from .parsing import (
     SseTextAccumulator,
     extract_chat_completion_text,
@@ -28,6 +33,7 @@ from .parsing import (
 from .storage import ChatProxyStore
 from .daily_summary import date_key_for, update_daily_summary
 from .summary import inject_rolling_summary, update_conversation_summary
+from .tool_registry import resolve_tools_policy
 
 
 HOP_BY_HOP_HEADERS = {
@@ -429,6 +435,58 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             context_snapshot=context_result.snapshot,
         )
 
+    @app.post("/build_context")
+    async def build_context(request: Request):
+        body = await _read_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        chat_body = _context_builder_chat_body(body)
+        include = _context_builder_include(body)
+        effective_cfg = _context_builder_config(cfg, include)
+        headers = _web_chat_headers(request.headers, chat_body, effective_cfg)
+        try:
+            context_result = build_web_chat_context(
+                body=chat_body,
+                cfg=effective_cfg,
+                store=store,
+                headers=headers,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+        identity = resolve_conversation(headers, chat_body)
+        summary_row = (
+            store.get_summary(identity.conversation_id)
+            if _include_enabled(include, "rolling_summary", True)
+            else None
+        )
+        summary_text = str(summary_row["summary"]) if summary_row else None
+        upstream_body = inject_rolling_summary(
+            context_result.upstream_body,
+            summary_text,
+        )
+        snapshot = _injected_context_snapshot(
+            context_snapshot=context_result.snapshot,
+            summary_row=summary_row,
+            final_body=upstream_body,
+        )
+        packet = context_packet_from_snapshot(
+            snapshot=snapshot,
+            messages=upstream_body.get("messages") or [],
+        )
+        messages = render_to_openai_messages(packet)
+        debug = _context_builder_debug(
+            snapshot=snapshot,
+            body=body,
+            chat_body=chat_body,
+            include=include,
+        )
+        return {
+            "messages": messages,
+            "debug": debug,
+            "context_packet": packet.to_dict(),
+        }
+
     @app.post("/chat/completions")
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
@@ -799,6 +857,279 @@ def _message_list_chars(messages: Any) -> int:
         if isinstance(message, dict):
             total += len(str(message.get("content") or ""))
     return total
+
+
+def _context_builder_chat_body(body: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(body.get("messages"), list) or str(body.get("user_text") or "").strip():
+        return dict(body)
+
+    recent_turns = body.get("recent_turns")
+    if not isinstance(recent_turns, list):
+        recent_turns = []
+    include = _context_builder_include(body)
+    include_recent = _include_enabled(include, "recent_turns", True)
+    messages = _context_builder_messages(recent_turns, include_recent=include_recent)
+    last_user = _last_user_turn_text(messages)
+
+    chat_body: dict[str, Any] = {
+        "client_id": str(body.get("user_id") or "").strip() or "context_builder",
+        "conversation_id": str(body.get("conversation_id") or "").strip(),
+        "assistant_key": "kai",
+        "model": str(body.get("model") or "").strip(),
+    }
+    if not chat_body["conversation_id"]:
+        chat_body.pop("conversation_id")
+    if not chat_body["model"]:
+        chat_body.pop("model")
+
+    runtime_hint = _context_builder_runtime_hint(body)
+    if runtime_hint and _include_enabled(include, "system", True):
+        chat_body["system_prompt"] = runtime_hint
+
+    params = body.get("params")
+    if isinstance(params, dict):
+        chat_body["params"] = params
+
+    if messages:
+        chat_body["messages"] = messages
+    elif last_user:
+        chat_body["user_text"] = last_user
+    else:
+        task_hint = str(body.get("task_hint") or "").strip()
+        if task_hint:
+            chat_body["user_text"] = task_hint
+    return chat_body
+
+
+def _context_builder_messages(
+    recent_turns: list[Any],
+    *,
+    include_recent: bool,
+) -> list[dict[str, str]]:
+    messages = []
+    for turn in recent_turns:
+        if not isinstance(turn, dict):
+            continue
+        role = str(turn.get("role") or "").strip()
+        if role == "tool":
+            role = "assistant"
+        if role not in {"system", "user", "assistant"}:
+            continue
+        content = str(turn.get("content") or "").strip()
+        if not content:
+            continue
+        messages.append({"role": role, "content": content})
+    if include_recent:
+        return messages
+    last_user = _last_user_turn_text(messages)
+    return [{"role": "user", "content": last_user}] if last_user else []
+
+
+def _last_user_turn_text(messages: list[dict[str, str]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return str(message.get("content") or "").strip()
+    return ""
+
+
+def _context_builder_include(body: dict[str, Any]) -> dict[str, Any]:
+    include = body.get("include")
+    return dict(include) if isinstance(include, dict) else {}
+
+
+def _context_builder_runtime_hint(body: dict[str, Any]) -> str:
+    parts = []
+    for key in ("mode", "locale", "timestamp", "task_hint"):
+        value = str(body.get(key) or "").strip()
+        if value:
+            parts.append(f"{key}: {value}")
+    runtime_prefs = _clean_mapping(body.get("runtime_prefs"))
+    if runtime_prefs:
+        parts.append("runtime_prefs: " + _mapping_inline(runtime_prefs))
+    guardrails = _clean_mapping(body.get("guardrails"))
+    if guardrails:
+        parts.append("guardrails: " + _mapping_inline(guardrails))
+    if not parts:
+        return ""
+    return "[Runtime Hints]\n" + "\n".join(f"- {part}" for part in parts)
+
+
+def _context_builder_config(
+    cfg: ProxyConfig,
+    include: dict[str, Any],
+) -> ProxyConfig:
+    updates: dict[str, Any] = {}
+    if not _include_enabled(include, "worldbook", True):
+        updates["worldbook_enabled"] = False
+    if not _include_enabled(include, "core_anchors", True):
+        updates["core_anchors_enabled"] = False
+    return replace(cfg, **updates) if updates else cfg
+
+
+def _include_enabled(
+    include: dict[str, Any],
+    key: str,
+    default: bool,
+) -> bool:
+    value = include.get(key, default)
+    return value is not False
+
+
+def _context_builder_debug(
+    *,
+    snapshot: dict[str, Any],
+    body: dict[str, Any],
+    chat_body: dict[str, Any],
+    include: dict[str, Any],
+) -> dict[str, Any]:
+    components = [
+        component
+        for component in snapshot.get("components") or []
+        if isinstance(component, dict)
+    ]
+    by_layer = {
+        str(component.get("name") or f"component_{index}"): _rough_tokens(
+            int(component.get("chars") or 0)
+        )
+        for index, component in enumerate(components)
+    }
+    notes = [
+        "Preview only: /build_context does not call the upstream LLM or persist turns.",
+    ]
+    if "messages" not in body and "user_text" not in body:
+        notes.append("Request was normalized from ContextBuilderRequest-like fields.")
+    if include.get("chatlog_history"):
+        notes.append("chatlog_history is not implemented in this thin endpoint yet.")
+    if include.get("health_data"):
+        notes.append("health_data is not implemented in this thin endpoint yet.")
+    return {
+        "included_layers": [
+            str(component.get("name"))
+            for component in components
+            if component.get("name") and int(component.get("message_count") or 0) > 0
+        ],
+        "source_ids": _context_builder_source_ids(components),
+        "token_estimates": {
+            "total": _rough_tokens(int(snapshot.get("final_chars") or 0)),
+            "by_layer": by_layer,
+        },
+        "truncated": {"by_layer": {}},
+        "notes": notes,
+        "mode": snapshot.get("mode"),
+        "model": snapshot.get("model") or chat_body.get("model"),
+        "source": snapshot.get("source"),
+        "request_meta": _context_builder_request_meta(body),
+        "tool_context": resolve_tools_policy(
+            body.get("tools_policy") if isinstance(body.get("tools_policy"), dict) else None
+        ),
+    }
+
+
+def _context_builder_source_ids(
+    components: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for index, component in enumerate(components):
+        layer = str(component.get("name") or f"component_{index}")
+        out[layer] = _component_source_ids(component)
+    return out
+
+
+def _component_source_ids(component: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    layer = str(component.get("name") or "").strip()
+
+    for raw_id in component.get("message_ids") or []:
+        ids.append(f"message:{raw_id}")
+
+    if layer == "rolling_short":
+        version = component.get("version")
+        if version is not None:
+            ids.append(f"rolling_summary:{version}")
+        last_message_id = component.get("last_message_id")
+        if last_message_id is not None:
+            ids.append(f"message:{last_message_id}")
+
+    for item in component.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if layer == "core_anchors":
+            value = item.get("anchor_key")
+            if value:
+                ids.append(f"core_anchor:{value}")
+        elif layer == "wb_snippets":
+            value = item.get("id") or item.get("name")
+            source = item.get("source")
+            if value and source:
+                ids.append(f"worldbook:{source}#{value}")
+            elif value:
+                ids.append(f"worldbook:{value}")
+            elif source:
+                ids.append(f"worldbook:{source}")
+        elif layer == "kmlog_search":
+            value = item.get("id")
+            if value is not None:
+                ids.append(f"kmlog:{value}")
+        elif item.get("id") is not None:
+            ids.append(f"{layer}:{item.get('id')}")
+
+    return _dedupe_debug_ids(ids)
+
+
+def _dedupe_debug_ids(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw_item in items:
+        item = str(raw_item or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _rough_tokens(chars: int) -> int:
+    if chars <= 0:
+        return 0
+    return max(1, round(chars / 4))
+
+
+def _context_builder_request_meta(body: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in (
+        "user_id",
+        "conversation_id",
+        "frontend",
+        "mode",
+        "locale",
+        "task_hint",
+        "timestamp",
+    ):
+        value = body.get(key)
+        if value is not None:
+            out[key] = value
+    for key in ("runtime_prefs", "guardrails"):
+        value = body.get(key)
+        if isinstance(value, dict):
+            out[key] = _clean_mapping(value)
+    return out
+
+
+def _clean_mapping(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key, raw_item in value.items():
+        name = str(key or "").strip()
+        if not name or raw_item is None:
+            continue
+        if isinstance(raw_item, (str, int, float, bool)):
+            out[name] = raw_item
+    return out
+
+
+def _mapping_inline(value: dict[str, Any]) -> str:
+    return ", ".join(f"{key}={item}" for key, item in value.items())
 
 
 def _web_chat_to_upstream_body(
