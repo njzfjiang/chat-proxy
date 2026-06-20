@@ -2,11 +2,37 @@ from chat_proxy.parsing import (
     SseTextAccumulator,
     extract_chat_completion_text,
     extract_token_usage,
+    is_tool_continuation,
     last_user_text,
     message_id_for,
     prepare_request_body_for_upstream,
     resolve_conversation,
 )
+
+
+def test_tool_continuation_requires_tool_activity_after_last_user():
+    assert is_tool_continuation(
+        {
+            "messages": [
+                {"role": "user", "content": "check weather"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"id": "call-1", "type": "function"}],
+                },
+                {"role": "tool", "tool_call_id": "call-1", "content": "sunny"},
+            ]
+        }
+    )
+    assert not is_tool_continuation(
+        {
+            "messages": [
+                {"role": "user", "content": "old"},
+                {"role": "tool", "content": "old tool result"},
+                {"role": "user", "content": "new"},
+            ]
+        }
+    )
 
 
 def test_resolve_conversation_prefers_headers():

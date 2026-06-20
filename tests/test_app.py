@@ -1731,6 +1731,117 @@ async def test_web_chat_replays_completed_explicit_request_id(
 
 
 @pytest.mark.anyio
+async def test_kelivo_tool_continuation_does_not_duplicate_user_message(
+    tmp_path,
+    upstream_app,
+    monkeypatch,
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    call_count = 0
+
+    async def completions(_request: Request):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return JSONResponse(
+                {
+                    "id": "cmpl-tool",
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "lookup",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                }
+            )
+        return JSONResponse(
+            {
+                "id": "cmpl-final",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "final answer"}}
+                ],
+            }
+        )
+
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+    headers = {"X-Kelivo-Conversation-Id": "tool-chat"}
+    first_messages = [{"role": "user", "content": "use the lookup tool"}]
+    continuation_messages = [
+        *first_messages,
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "tool result"},
+    ]
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        first = await client.post(
+            "/chat/completions",
+            headers=headers,
+            json={"model": "gpt-test", "messages": first_messages},
+        )
+        second = await client.post(
+            "/chat/completions",
+            headers=headers,
+            json={"model": "gpt-test", "messages": continuation_messages},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    conn = sqlite3.connect(db_path)
+    user_rows = conn.execute(
+        "SELECT content FROM messages WHERE conversation_id = ? AND role = 'user'",
+        ("tool-chat",),
+    ).fetchall()
+    request_metadata = [
+        json.loads(row[0])
+        for row in conn.execute(
+            "SELECT metadata_json FROM requests ORDER BY created_at"
+        ).fetchall()
+    ]
+    conn.close()
+
+    assert user_rows == [("use the lookup tool",)]
+    assert request_metadata[0]["user_message_reused_for_tool_continuation"] is False
+    assert request_metadata[1]["user_message_reused_for_tool_continuation"] is True
+
+
+@pytest.mark.anyio
 async def test_conversation_can_be_renamed_and_archived(tmp_path):
     db_path = tmp_path / "chat_search.db"
     _create_base_db(db_path)

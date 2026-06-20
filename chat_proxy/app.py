@@ -23,6 +23,7 @@ from .parsing import (
     SseTextAccumulator,
     extract_chat_completion_text,
     extract_token_usage,
+    is_tool_continuation,
     last_user_text,
     message_id_for,
     prepare_request_body_for_upstream,
@@ -556,6 +557,12 @@ async def _handle_chat_body(
     now = _now()
     model_id = str(upstream_body.get("model") or body.get("model") or "") or None
     user_text = last_user_text(body)
+    reused_user_message = _reuses_user_message_for_tool_continuation(
+        store=store,
+        conversation_id=identity.conversation_id,
+        body=body,
+        user_text=user_text,
+    )
     conversation_title = _conversation_title(identity)
     if webapp_mode and user_text:
         conversation_title = _auto_conversation_title(
@@ -577,6 +584,7 @@ async def _handle_chat_body(
         ),
         "stripped_metadata": prepared_body.stripped_metadata or {},
         "path": incoming_path,
+        "user_message_reused_for_tool_continuation": reused_user_message,
     }
 
     store.upsert_conversation(
@@ -599,7 +607,7 @@ async def _handle_chat_body(
         metadata=metadata,
     )
 
-    if user_text:
+    if user_text and not reused_user_message:
         store.insert_message(
             timestamp=now,
             role="user",
@@ -701,6 +709,24 @@ async def _handle_chat_body(
         headers=_response_headers(response.headers),
         media_type=response.headers.get("content-type"),
     )
+
+
+def _reuses_user_message_for_tool_continuation(
+    *,
+    store: ChatProxyStore,
+    conversation_id: str,
+    body: dict[str, Any],
+    user_text: str | None,
+) -> bool:
+    if not user_text or not is_tool_continuation(body):
+        return False
+    latest_user = store.get_latest_message_by_role(
+        conversation_id=conversation_id,
+        role="user",
+    )
+    if latest_user is None:
+        return False
+    return str(latest_user.get("content") or "").strip() == user_text.strip()
 
 
 async def _stream_upstream(

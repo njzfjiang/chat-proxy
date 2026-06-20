@@ -785,6 +785,26 @@ LIMIT ?
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
+    def get_latest_message_by_role(
+        self,
+        *,
+        conversation_id: str,
+        role: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+SELECT id, timestamp, role, content, conversation_title,
+       conversation_id, message_id, kind, request_id, token_usage_json
+FROM messages
+WHERE conversation_id = ? AND role = ?
+ORDER BY id DESC
+LIMIT 1
+""",
+                [conversation_id, role],
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_conversation_messages(
         self,
         *,

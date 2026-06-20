@@ -260,6 +260,12 @@ context snapshot for inspection.
 Explicit `request_id` values are idempotent: a completed duplicate replays the
 stored response, while an unfinished duplicate returns `409`.
 
+For OpenAI-compatible tool continuations, the proxy does not persist the same
+last user message again when tool/tool-call messages appear after that user
+turn and the latest stored user content matches. This is a conservative
+fallback for clients that do not yet provide a stable turn ID; ordinary
+non-tool turns are not content-deduplicated.
+
 Conversation and summary reads:
 
 ```text

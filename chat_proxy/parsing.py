@@ -156,6 +156,32 @@ def last_user_text(body: Mapping[str, Any]) -> str | None:
     return None
 
 
+def is_tool_continuation(body: Mapping[str, Any]) -> bool:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return False
+
+    last_user_index = -1
+    for index, message in enumerate(messages):
+        if isinstance(message, dict) and str(message.get("role") or "") == "user":
+            last_user_index = index
+    if last_user_index < 0:
+        return False
+
+    for message in messages[last_user_index + 1 :]:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "")
+        if role in {"tool", "function"}:
+            return True
+        if role == "assistant" and (
+            isinstance(message.get("tool_calls"), list)
+            or isinstance(message.get("function_call"), dict)
+        ):
+            return True
+    return False
+
+
 def first_system_text(body: Mapping[str, Any]) -> str | None:
     messages = body.get("messages")
     if not isinstance(messages, list):
