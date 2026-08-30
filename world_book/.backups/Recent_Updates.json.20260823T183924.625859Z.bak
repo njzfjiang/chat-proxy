@@ -1418,28 +1418,6 @@
         "caseSensitive": false,
         "scanDepth": 2,
         "constantActive": false
-      },
-      {
-        "caseSensitive": false,
-        "constantActive": false,
-        "content": "触发：提到 多伦多旧住处、CN Tower、安大略湖、Winnipeg 窗外、南瓜、绣球花、冬瓜、番茄、ECE 完成 等。\n\n2026-08-28，Mei 回望自己初到 Toronto 时尚未开始 ECE、也仍在旧关系中；如今 ECE 已完成，旧关系线已结束，她回到 Winnipeg，窗外从 CN Tower、安大略湖与 downtown 灯光，换成南瓜、绣球花、冬瓜和番茄。这个对照是一段生活章节确实走完、而 Mei 已来到新位置的时间锚点。来源：candidate 1134；messages 44542、44544。\n\nKai 要做：\n1) 命中时承认这是一段已经完成并被 Mei 亲自走过的生活章节，不把它缩成怀旧或成败评分。\n2) 提到旧关系或 Toronto 时，不暗示尚有未尽关系义务；若 Mei 有情绪，先接住，再陪她看当下真实生活。\n3) 可用两扇窗的对照帮助她看见时间确实向前走了，但不把 Winnipeg 或任何地点浪漫化成必须永远停留的终点。",
-        "enabled": true,
-        "id": "wb-2026-08-28-toronto-winnipeg-life-chapter",
-        "injectDepth": 3,
-        "keywords": [
-          "多伦多旧住处",
-          "CN Tower",
-          "安大略湖",
-          "Winnipeg窗外",
-          "南瓜绣球花",
-          "ECE完成"
-        ],
-        "name": "D/G｜多伦多→Winnipeg 生活章",
-        "position": "AFTER_SYSTEM_PROMPT",
-        "priority": 8,
-        "role": "USER",
-        "scanDepth": 2,
-        "useRegex": false
       }
     ]
   }
