@@ -3,8 +3,8 @@
   "type": "lorebook",
   "data": {
     "id": "9e5769a1-5b17-4e69-8acb-bc7158fd10b2",
-    "name": "Recent_Updates（截至 2026-08-23）",
-    "description": "累计 WB 增量条目（更新至 2026-08-23），基于 2026-05-17~2026-08-23 memory candidates 与 reviewed_memory_items 去重整理。J = 短期／当前生活与项目上下文；J 条目应注明清理或复核时间。",
+    "name": "Recent_Updates（截至 2026-08-30）",
+    "description": "累计 WB 增量条目（更新至 2026-08-30），基于 2026-05-17~2026-08-23 memory candidates 与 reviewed_memory_items 去重整理。J = 短期／当前生活与项目上下文；J 条目应注明清理或复核时间。",
     "enabled": true,
     "entries": [
       {
@@ -1428,8 +1428,10 @@
         "injectDepth": 3,
         "keywords": [
           "多伦多旧住处",
+          "Toronto",
           "CN Tower",
           "安大略湖",
+          "Winnipeg",
           "Winnipeg窗外",
           "南瓜绣球花",
           "ECE完成"
