@@ -443,6 +443,9 @@ class SseTextAccumulator:
         self._buffer = ""
         self._parts: list[str] = []
         self._usage: dict[str, int] | None = None
+        self._saw_data = False
+        self._done_received = False
+        self._finish_reason: str | None = None
 
     @property
     def text(self) -> str:
@@ -452,17 +455,40 @@ class SseTextAccumulator:
     def usage(self) -> dict[str, int] | None:
         return self._usage
 
+    @property
+    def saw_data(self) -> bool:
+        return self._saw_data
+
+    @property
+    def done_received(self) -> bool:
+        return self._done_received
+
+    @property
+    def finish_reason(self) -> str | None:
+        return self._finish_reason
+
     def add_bytes(self, chunk: bytes) -> None:
         self._buffer += chunk.decode("utf-8", errors="replace")
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
             self._consume_line(line.rstrip("\r"))
 
+    def finish(self) -> None:
+        """Consume a final unterminated SSE line after the upstream closes."""
+        if not self._buffer:
+            return
+        line, self._buffer = self._buffer, ""
+        self._consume_line(line.rstrip("\r"))
+
     def _consume_line(self, line: str) -> None:
         if not line.startswith("data:"):
             return
+        self._saw_data = True
         payload = line[5:].strip()
-        if not payload or payload == "[DONE]":
+        if payload == "[DONE]":
+            self._done_received = True
+            return
+        if not payload:
             return
         try:
             decoded = json.loads(payload)
@@ -477,6 +503,9 @@ class SseTextAccumulator:
         if isinstance(choices, list) and choices:
             first = choices[0]
             if isinstance(first, dict):
+                finish_reason = first.get("finish_reason")
+                if isinstance(finish_reason, str) and finish_reason:
+                    self._finish_reason = finish_reason
                 delta = first.get("delta")
                 if isinstance(delta, dict):
                     text = extract_text_content(delta.get("content"))

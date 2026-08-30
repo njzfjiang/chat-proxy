@@ -303,6 +303,13 @@ web UI falls back to a local estimate when true usage is unavailable. For
 streaming requests, the web UI sends `stream_options.include_usage=true`; support
 depends on the selected OpenAI-compatible provider.
 
+For OpenAI-compatible SSE responses, the proxy forwards an upstream `[DONE]`
+sentinel unchanged. If a successful upstream stream closes after sending SSE
+data but omits the sentinel, the proxy emits one terminal `[DONE]` event. Request
+payload traces record `sse_done_received`, `sse_finish_reason`, and
+`synthetic_done_emitted` in `response_json`. Streaming responses also disable
+intermediary buffering where supported.
+
 The OpenAI-compatible endpoints still support the same identity via headers:
 
 ```text

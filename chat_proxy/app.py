@@ -744,6 +744,7 @@ async def _stream_upstream(
     client = httpx.AsyncClient(timeout=None)
     accumulator = SseTextAccumulator()
     raw_chunks: list[str] = []
+    synthetic_done_emitted = False
 
     try:
         upstream = await client.send(
@@ -762,30 +763,41 @@ async def _stream_upstream(
         return JSONResponse({"error": str(exc)}, status_code=502)
 
     async def body_iter():
+        nonlocal synthetic_done_emitted
         status = "completed"
         error_text = None
         try:
-            async for chunk in upstream.aiter_bytes():
-                if chunk:
-                    accumulator.add_bytes(chunk)
-                    raw_chunks.append(chunk.decode("utf-8", errors="replace"))
-                    yield chunk
-            if upstream.status_code >= 400:
-                status = "error"
-                error_text = "".join(raw_chunks)
-        except (asyncio.CancelledError, GeneratorExit):
-            status = "cancelled"
-            error_text = "client disconnected while streaming"
-            raise
-        except httpx.RemoteProtocolError as exc:
-            status = "upstream_incomplete" if raw_chunks else "error"
-            error_text = str(exc)
-            if not raw_chunks:
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    if chunk:
+                        accumulator.add_bytes(chunk)
+                        raw_chunks.append(chunk.decode("utf-8", errors="replace"))
+                        yield chunk
+                if upstream.status_code >= 400:
+                    status = "error"
+                    error_text = "".join(raw_chunks)
+            except (asyncio.CancelledError, GeneratorExit):
+                status = "cancelled"
+                error_text = "client disconnected while streaming"
                 raise
-        except Exception as exc:
-            status = "error"
-            error_text = str(exc)
-            raise
+            except httpx.RemoteProtocolError as exc:
+                status = "upstream_incomplete" if raw_chunks else "error"
+                error_text = str(exc)
+                if not raw_chunks:
+                    raise
+            except Exception as exc:
+                status = "error"
+                error_text = str(exc)
+                raise
+
+            accumulator.finish()
+            if (
+                upstream.status_code < 400
+                and accumulator.saw_data
+                and not accumulator.done_received
+            ):
+                synthetic_done_emitted = True
+                yield b"data: [DONE]\n\n"
         finally:
             await upstream.aclose()
             await client.aclose()
@@ -795,7 +807,12 @@ async def _stream_upstream(
                 status=status,
                 http_status=upstream.status_code,
                 response_headers=sanitize_headers(dict(upstream.headers)),
-                response_json={"stream": "".join(raw_chunks)},
+                response_json={
+                    "stream": "".join(raw_chunks),
+                    "sse_done_received": accumulator.done_received,
+                    "sse_finish_reason": accumulator.finish_reason,
+                    "synthetic_done_emitted": synthetic_done_emitted,
+                },
                 error_text=error_text,
             )
             assistant_text = accumulator.text.strip()
@@ -822,11 +839,14 @@ async def _stream_upstream(
                     conversation_id=conversation_id,
                 )
 
+    response_headers = _response_headers(upstream.headers)
+    response_headers.setdefault("cache-control", "no-cache")
+    response_headers.setdefault("x-accel-buffering", "no")
     return StreamingResponse(
         body_iter(),
         status_code=upstream.status_code,
         media_type=upstream.headers.get("content-type", "text/event-stream"),
-        headers=_response_headers(upstream.headers),
+        headers=response_headers,
     )
 
 

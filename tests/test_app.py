@@ -266,16 +266,24 @@ async def test_proxy_streams_and_persists_assistant_text(tmp_path, upstream_app,
 
     assert resp.status_code == 200
     assert "data:" in resp.text
+    assert resp.text.count("data: [DONE]") == 1
+    assert resp.headers["cache-control"] == "no-cache"
+    assert resp.headers["x-accel-buffering"] == "no"
 
     conn = sqlite3.connect(db_path)
     assistant = conn.execute(
         "SELECT content FROM messages WHERE role = 'assistant'"
     ).fetchone()[0]
-    status = conn.execute("SELECT status FROM requests").fetchone()[0]
+    request_row = conn.execute(
+        "SELECT status, response_json FROM requests"
+    ).fetchone()
     conn.close()
 
     assert assistant == "hello"
-    assert status == "completed"
+    assert request_row[0] == "completed"
+    response_json = json.loads(request_row[1])
+    assert response_json["sse_done_received"] is True
+    assert response_json["synthetic_done_emitted"] is False
 
 
 @pytest.mark.anyio
@@ -331,17 +339,81 @@ async def test_proxy_finishes_partial_stream_on_incomplete_chunked_read(
 
     assert resp.status_code == 200
     assert "partial" in resp.text
+    assert resp.text.endswith("data: [DONE]\n\n")
 
     conn = sqlite3.connect(db_path)
     assistant = conn.execute(
         "SELECT content FROM messages WHERE role = 'assistant'"
     ).fetchone()[0]
-    request_row = conn.execute("SELECT status, error_text FROM requests").fetchone()
+    request_row = conn.execute(
+        "SELECT status, error_text, response_json FROM requests"
+    ).fetchone()
     conn.close()
 
     assert assistant == "partial"
     assert request_row[0] == "upstream_incomplete"
     assert "incomplete chunked read" in request_row[1]
+    response_json = json.loads(request_row[2])
+    assert response_json["sse_done_received"] is False
+    assert response_json["synthetic_done_emitted"] is True
+
+
+@pytest.mark.anyio
+async def test_proxy_adds_done_when_upstream_closes_cleanly_without_sentinel(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    async def stream_without_done(_request: Request):
+        async def chunks():
+            yield b'data: {"choices":[{"delta":{"content":"complete"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+
+        return StreamingResponse(chunks(), media_type="text/event-stream")
+
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(stream_without_done)
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat/completions",
+            headers={"X-Kelivo-Conversation-Id": "chat-no-done"},
+            json={
+                "model": "gpt-test",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.text.endswith("data: [DONE]\n\n")
+    assert resp.text.count("data: [DONE]") == 1
+
+    conn = sqlite3.connect(db_path)
+    request_row = conn.execute(
+        "SELECT status, response_json FROM requests"
+    ).fetchone()
+    conn.close()
+
+    assert request_row[0] == "completed"
+    response_json = json.loads(request_row[1])
+    assert response_json["sse_done_received"] is False
+    assert response_json["sse_finish_reason"] == "stop"
+    assert response_json["synthetic_done_emitted"] is True
 
 
 @pytest.mark.anyio

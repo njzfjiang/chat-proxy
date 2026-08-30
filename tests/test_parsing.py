@@ -272,6 +272,32 @@ def test_sse_accumulator_reads_openai_delta_text():
     acc.add_bytes(b"data: [DONE]\n\n")
 
     assert acc.text == "hello"
+    assert acc.saw_data is True
+    assert acc.done_received is True
+
+
+def test_sse_accumulator_flushes_unterminated_final_line():
+    acc = SseTextAccumulator()
+    acc.add_bytes(
+        b'data: {"choices":[{"delta":{"content":"done"},'
+        b'"finish_reason":"stop"}]}'
+    )
+
+    acc.finish()
+
+    assert acc.text == "done"
+    assert acc.finish_reason == "stop"
+    assert acc.done_received is False
+
+
+def test_sse_accumulator_detects_done_split_across_network_chunks():
+    acc = SseTextAccumulator()
+
+    acc.add_bytes(b"data: [DO")
+    assert acc.done_received is False
+
+    acc.add_bytes(b"NE]\n\n")
+    assert acc.done_received is True
 
 
 def test_sse_accumulator_reads_usage():
