@@ -17,10 +17,15 @@ def test_summary_prompt_requires_short_semi_structured_format():
     assert "under about 180 words" in prompt
     assert 'Any section may be "None"' in prompt
     assert "Prefer omission over inference" in prompt
-    assert "fallible compression, not ground truth" in prompt
+    assert "Current raw conversation is primary evidence" in prompt
+    assert "must never override, reinterpret, or strengthen" in prompt
     assert "Do not infer near-term goals from mood" in prompt
     assert "Do not promote a one-off assistant response" in prompt
+    assert "Do not treat casual assistant questions" in prompt
+    assert "unless the user explicitly accepted them" in prompt
     assert "Never add a `[verified]` marker yourself" in prompt
+    assert "otherwise drop it." in prompt
+    assert "mark it uncertain" not in prompt
     assert "still extract at least 1 bullet" not in prompt
     assert "Return only the updated rolling summary." in prompt
     assert "user: hello" in prompt

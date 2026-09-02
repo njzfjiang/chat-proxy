@@ -29,9 +29,10 @@ Rules:
 - Any section may be "None". Never invent content to avoid an empty section.
 - Do not infer near-term goals from mood, emotional support, or actions unless the user explicitly expresses an intention.
 - Do not promote a one-off assistant response into a user preference or protocol.
-- Treat the previous rolling summary as fallible compression, not ground truth.
-- If a previous-summary claim is not supported by the current conversation input, preserve it only if it is already marked `[verified]`; otherwise drop it or mark it uncertain.
+- Current raw conversation is primary evidence. The prior rolling cache may preserve continuity only; it must never override, reinterpret, or strengthen the current conversation.
+- If a previous-summary claim is not supported by the current conversation input, preserve it only if it is already marked `[verified]`; otherwise drop it.
 - Never add a `[verified]` marker yourself. Only preserve an existing marker supplied by an external verification step.
+- Do not treat casual assistant questions, suggestions, or invitations as open threads unless the user explicitly accepted them, deferred a decision, or requested a follow-up.
 - Prefer omission over inference.
 - Remove stale or completed goals and threads as they clearly resolve.
 - Describe concrete actions and explicit decisions without adding psychological diagnoses, generic relationship labels, or inferred motivations.
