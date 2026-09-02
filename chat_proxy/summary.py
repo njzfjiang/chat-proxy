@@ -8,33 +8,41 @@ from .config import ProxyConfig
 from .parsing import extract_chat_completion_text
 from .storage import ChatProxyStore
 
-
 SUMMARY_SYSTEM_PROMPT = (
-    "Maintain a concise, semi-structured rolling summary of a chat conversation. "
-    "Preserve durable facts, decisions, preferences, unresolved tasks, and "
-    "important context. Explicitly track current focus and near-term goals. "
-    "Remove transient wording and stale details, and avoid inventing details. "
-    "Keep the whole summary under about 220 words."
+    "Maintain a concise, cautious rolling continuity cache for a chat "
+    "conversation. This cache is fallible compression, not authoritative memory. "
+    "Keep only explicitly supported current context and unresolved threads. "
+    "Prefer omission over inference and keep the whole summary under about 180 "
+    "words."
 )
 
 SUMMARY_FORMAT_INSTRUCTIONS = """Return exactly these sections:
-Now: 1-3 sentences about the current situation and what the user is doing or focusing on this session.
-Current focus & near-term goals (1–14 days): 2-6 bullets capturing concrete projects, tasks, or themes the user plans to work on soon.
-Key context: up to 5 bullets with durable facts, preferences, and background that shape how to respond.
-Open threads: up to 5 bullets, or "None", for unresolved questions, pending decisions, or follow-ups the assistant might revisit.
-Style / protocols: up to 5 bullets on interaction style, boundaries, and care/relationship protocols inferred from the conversation.
+Now: 1-3 sentences about the explicitly supported current situation, or "None".
+Current focus & near-term goals (1–14 days): up to 5 bullets containing only intentions or goals the user explicitly stated or confirmed, or "None".
+Key context: up to 5 bullets containing only explicitly stated, confirmed, or externally verified context needed for continuity, or "None".
+Open threads: up to 5 bullets containing only explicitly unanswered questions, pending decisions, or promised follow-ups, or "None".
+Style / protocols: up to 5 bullets containing only user-stated or user-confirmed interaction preferences, boundaries, or care/relationship protocols, or "None".
 
 Rules:
-- Keep the whole summary under about 220 words.
-- Prefer durable facts and stable goals over transient phrasing.
-- Summarize near-term goals at a coarse level (project / theme + 1–2 concrete next steps if clear), not as a long todo list.
+- Keep the whole summary under about 180 words.
+- A repeated pattern is not a durable preference, protocol, identity fact, or goal unless the user explicitly states it, confirms it, or the supplied prior summary marks it as externally verified.
+- Any section may be "None". Never invent content to avoid an empty section.
+- Do not infer near-term goals from mood, emotional support, or actions unless the user explicitly expresses an intention.
+- Do not promote a one-off assistant response into a user preference or protocol.
+- Treat the previous rolling summary as fallible compression, not ground truth.
+- If a previous-summary claim is not supported by the current conversation input, preserve it only if it is already marked `[verified]`; otherwise drop it or mark it uncertain.
+- Never add a `[verified]` marker yourself. Only preserve an existing marker supplied by an external verification step.
+- Prefer omission over inference.
 - Remove stale or completed goals and threads as they clearly resolve.
-- Describe concrete actions, tone, and decisions; avoid re-labelling the relationship with generic kink labels (e.g. "dom/sub") or psychological diagnoses.
-- Do not introduce new category labels for the relationship; keep using the fox–cat / long-term partner framing implied by the conversation, unless the user explicitly defines another label.
-- If the conversation is mostly emotional support, still extract at least 1 bullet in 'Current focus & near-term goals' that reflects what the user cares about or may want to move on later (even if very small, like “rest” or “stabilize HP_max”).
+- Describe concrete actions and explicit decisions without adding psychological diagnoses, generic relationship labels, or inferred motivations.
+- Do not retain explicit intimacy details unless they are necessary for a currently unresolved, explicitly stated boundary or safety issue.
 - Return only the updated rolling summary."""
 
-SUMMARY_INJECTION_PREFIX = "Rolling summary of this conversation so far:\n"
+SUMMARY_INJECTION_PREFIX = (
+    "Rolling continuity cache (derived and fallible; not authoritative memory).\n"
+    "Use it only as a continuity hint. Prefer current messages and curated "
+    "sources when they conflict:\n"
+)
 
 
 def inject_rolling_summary(

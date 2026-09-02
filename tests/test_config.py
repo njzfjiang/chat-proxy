@@ -18,6 +18,12 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
                 "CHAT_PROXY_WORLDBOOK_CHARS_TOTAL=900",
                 "CHAT_PROXY_RETRIEVAL_ENABLED=true",
                 "CHAT_PROXY_RETRIEVAL_INJECT_ENABLED=false",
+                "CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED=true",
+                "CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED=false",
+                "CHAT_PROXY_MOTHER_MEMORY_ENABLED=true",
+                "CHAT_PROXY_MOTHER_MEMORY_INJECT_ENABLED=false",
+                "CHAT_PROXY_MOTHER_MEMORY_LIMIT=3",
+                "CHAT_PROXY_MOTHER_MEMORY_CHARS_TOTAL=1400",
                 "CHAT_PROXY_KMLOG_SEARCH_URL=http://127.0.0.1:8013",
                 "CHAT_PROXY_KMLOG_SEARCH_API_KEY='search-key'",
                 "CHAT_PROXY_KMLOG_SEARCH_LIMIT=7",
@@ -47,6 +53,14 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     monkeypatch.delenv("CHAT_PROXY_WORLDBOOK_CHARS_TOTAL", raising=False)
     monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_INJECT_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED", raising=False)
+    monkeypatch.delenv(
+        "CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED", raising=False
+    )
+    monkeypatch.delenv("CHAT_PROXY_MOTHER_MEMORY_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_MOTHER_MEMORY_INJECT_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_MOTHER_MEMORY_LIMIT", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_MOTHER_MEMORY_CHARS_TOTAL", raising=False)
     monkeypatch.delenv("CHAT_PROXY_KMLOG_SEARCH_URL", raising=False)
     monkeypatch.delenv("CHAT_PROXY_KMLOG_SEARCH_API_KEY", raising=False)
     monkeypatch.delenv("CHAT_PROXY_KMLOG_SEARCH_LIMIT", raising=False)
@@ -77,6 +91,14 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     assert cfg.worldbook_chars_total == 900
     assert cfg.retrieval_enabled is True
     assert cfg.retrieval_inject_enabled is False
+    assert cfg.retrieval_router_enabled is True
+    assert cfg.retrieval_query_planner_enabled is False
+    assert cfg.mother_memory_enabled is True
+    assert cfg.mother_memory_inject_enabled is False
+    assert cfg.mother_memory_url == "http://127.0.0.1:8013"
+    assert cfg.mother_memory_api_key == "search-key"
+    assert cfg.mother_memory_limit == 3
+    assert cfg.mother_memory_chars_total == 1400
     assert cfg.kmlog_search_url == "http://127.0.0.1:8013"
     assert cfg.kmlog_search_api_key == "search-key"
     assert cfg.kmlog_search_limit == 7

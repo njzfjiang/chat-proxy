@@ -456,11 +456,19 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
         identity = resolve_conversation(headers, chat_body)
+        has_as_of_cutoff = bool(
+            chat_body.get("as_of_message_id") or chat_body.get("as_of_timestamp")
+        )
         summary_row = (
             store.get_summary(identity.conversation_id)
             if _include_enabled(include, "rolling_summary", True)
+            and not has_as_of_cutoff
             else None
         )
+        if has_as_of_cutoff and _include_enabled(include, "rolling_summary", True):
+            context_result.snapshot["rolling_short_suppressed_reason"] = (
+                "Historical cutoff requested; no as-of summary version is available."
+            )
         summary_text = str(summary_row["summary"]) if summary_row else None
         upstream_body = inject_rolling_summary(
             context_result.upstream_body,
@@ -947,6 +955,10 @@ def _context_builder_chat_body(body: dict[str, Any]) -> dict[str, Any]:
     task_hint = str(body.get("task_hint") or "").strip()
     if task_hint:
         chat_body["task_hint"] = task_hint
+    for key in ("as_of_message_id", "as_of_timestamp"):
+        value = body.get(key)
+        if value is not None and str(value).strip():
+            chat_body[key] = value
     return chat_body
 
 
@@ -1012,6 +1024,8 @@ def _context_builder_config(
         updates["worldbook_enabled"] = False
     if not _include_enabled(include, "core_anchors", True):
         updates["core_anchors_enabled"] = False
+    if not _include_enabled(include, "mother_memory", True):
+        updates["mother_memory_enabled"] = False
     return replace(cfg, **updates) if updates else cfg
 
 
@@ -1069,6 +1083,9 @@ def _context_builder_debug(
         notes.append("chatlog_history is not implemented in this thin endpoint yet.")
     if include.get("health_data"):
         notes.append("health_data is not implemented in this thin endpoint yet.")
+    suppressed_summary = snapshot.get("rolling_short_suppressed_reason")
+    if suppressed_summary:
+        notes.append(str(suppressed_summary))
     return {
         "included_layers": [
             str(component.get("name"))
@@ -1130,6 +1147,10 @@ def _component_source_ids(component: dict[str, Any]) -> list[str]:
             value = item.get("anchor_key")
             if value:
                 ids.append(f"core_anchor:{value}")
+        elif layer == "mother_memory":
+            value = item.get("path")
+            if value:
+                ids.append(f"mother:{value}")
         elif layer == "wb_snippets":
             value = item.get("id") or item.get("name")
             source = item.get("source")
@@ -1177,6 +1198,8 @@ def _context_builder_request_meta(body: dict[str, Any]) -> dict[str, Any]:
         "locale",
         "task_hint",
         "timestamp",
+        "as_of_message_id",
+        "as_of_timestamp",
     ):
         value = body.get(key)
         if value is not None:

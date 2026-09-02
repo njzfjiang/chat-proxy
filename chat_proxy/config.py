@@ -31,6 +31,15 @@ class ProxyConfig:
     worldbook_chars_total: int = 800
     retrieval_enabled: bool = False
     retrieval_inject_enabled: bool = False
+    retrieval_router_enabled: bool = False
+    retrieval_query_planner_enabled: bool = False
+    mother_memory_enabled: bool = False
+    mother_memory_inject_enabled: bool = False
+    mother_memory_url: str | None = None
+    mother_memory_api_key: str | None = None
+    mother_memory_limit: int = 4
+    mother_memory_chars_total: int = 1600
+    mother_memory_timeout_seconds: float = 3.0
     kmlog_search_url: str | None = None
     kmlog_search_api_key: str | None = None
     kmlog_search_limit: int = 5
@@ -91,6 +100,10 @@ def load_config() -> ProxyConfig:
     worldbook_chars_total = int(os.getenv("CHAT_PROXY_WORLDBOOK_CHARS_TOTAL", "800"))
     retrieval_enabled = _env_bool("CHAT_PROXY_RETRIEVAL_ENABLED")
     retrieval_inject_enabled = _env_bool("CHAT_PROXY_RETRIEVAL_INJECT_ENABLED")
+    retrieval_router_enabled = _env_bool("CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED")
+    retrieval_query_planner_enabled = _env_bool(
+        "CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED"
+    )
     kmlog_search_url = os.getenv("CHAT_PROXY_KMLOG_SEARCH_URL", "").strip()
     kmlog_search_api_key = os.getenv("CHAT_PROXY_KMLOG_SEARCH_API_KEY", "").strip()
     kmlog_search_limit = int(os.getenv("CHAT_PROXY_KMLOG_SEARCH_LIMIT", "5"))
@@ -99,6 +112,25 @@ def load_config() -> ProxyConfig:
     )
     kmlog_search_timeout_seconds = float(
         os.getenv("CHAT_PROXY_KMLOG_SEARCH_TIMEOUT_SECONDS", "3.0")
+    )
+    mother_memory_enabled = _env_bool("CHAT_PROXY_MOTHER_MEMORY_ENABLED")
+    mother_memory_inject_enabled = _env_bool(
+        "CHAT_PROXY_MOTHER_MEMORY_INJECT_ENABLED"
+    )
+    mother_memory_url = (
+        os.getenv("CHAT_PROXY_MOTHER_MEMORY_URL", "").strip()
+        or kmlog_search_url
+    )
+    mother_memory_api_key = (
+        os.getenv("CHAT_PROXY_MOTHER_MEMORY_API_KEY", "").strip()
+        or kmlog_search_api_key
+    )
+    mother_memory_limit = int(os.getenv("CHAT_PROXY_MOTHER_MEMORY_LIMIT", "4"))
+    mother_memory_chars_total = int(
+        os.getenv("CHAT_PROXY_MOTHER_MEMORY_CHARS_TOTAL", "1600")
+    )
+    mother_memory_timeout_seconds = float(
+        os.getenv("CHAT_PROXY_MOTHER_MEMORY_TIMEOUT_SECONDS", "3.0")
     )
     core_anchors_enabled = _env_bool("CHAT_PROXY_CORE_ANCHORS_ENABLED")
     core_anchors_url = (
@@ -178,6 +210,15 @@ def load_config() -> ProxyConfig:
         worldbook_chars_total=worldbook_chars_total,
         retrieval_enabled=retrieval_enabled,
         retrieval_inject_enabled=retrieval_inject_enabled,
+        retrieval_router_enabled=retrieval_router_enabled,
+        retrieval_query_planner_enabled=retrieval_query_planner_enabled,
+        mother_memory_enabled=mother_memory_enabled,
+        mother_memory_inject_enabled=mother_memory_inject_enabled,
+        mother_memory_url=mother_memory_url.rstrip("/") or None,
+        mother_memory_api_key=mother_memory_api_key or None,
+        mother_memory_limit=mother_memory_limit,
+        mother_memory_chars_total=mother_memory_chars_total,
+        mother_memory_timeout_seconds=mother_memory_timeout_seconds,
         kmlog_search_url=kmlog_search_url.rstrip("/") or None,
         kmlog_search_api_key=kmlog_search_api_key or None,
         kmlog_search_limit=kmlog_search_limit,

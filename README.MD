@@ -20,6 +20,94 @@ python -m chat_proxy.main
 The proxy automatically loads `.env` from the current working directory before
 reading config. Set `CHAT_PROXY_ENV_FILE` to use a different env file.
 
+## Query clustering benchmark seed
+
+Mine topic clusters from real user chat turns without calling an LLM:
+
+```powershell
+python -m chat_proxy.query_clustering `
+  --db "C:\Users\ellat\Desktop\K_Space\kmlog-search\chat_data\chat_search_rebuilt.db" `
+  --clusters 30 `
+  --min-chars 6 `
+  --output-dir benchmark_outputs\query_clusters_rebuilt
+```
+
+The command reads only `role=user, kind=chat` rows, normalizes whitespace,
+deduplicates exact text, and clusters mixed Chinese n-gram/English-token TF-IDF
+vectors after latent semantic projection. Duplicate occurrence counts remain as
+clustering weights, so frequent turns still affect topic size without being
+copied into the vector matrix. Outputs include a Markdown report, JSON summary,
+full assignment CSV, and a cluster review CSV with blank `memory_type` and
+`context_need` columns for manual labeling.
+
+The default `--profile content` removes timestamps, attachment paths, repeated
+laughter/emoticons, common address terms, and interaction gestures before
+vectorization; turns left without topic-bearing text are assigned to cluster 0.
+Use `--profile raw` to inspect surface-language and interaction-style clusters.
+
+Use `--after`/`--before` for a time slice and `--max-documents` for a bounded
+sample. Use `--min-topic-chars` to control which cleaned turns go to the
+low-content cluster instead of topic clustering. A value around `40` is useful
+for a second, long-form theme pass; keep the default to measure the real mix of
+short and substantive turns. `--immutable` is useful for a static offline
+database copy when SQLite locking is unavailable, but it ignores uncheckpointed
+WAL data and should not be used against a live database.
+
+After labeling the first-pass `cluster_review.csv`, refine only broad or mixed
+parents without overwriting that work:
+
+```powershell
+python -m chat_proxy.query_cluster_refinement `
+  --assignments benchmark_outputs\query_clusters_rebuilt\assignments.csv `
+  --review benchmark_outputs\query_clusters_rebuilt\cluster_review.csv `
+  --parents 1,2,3,5,6,8 `
+  --subclusters 8 `
+  --output-dir benchmark_outputs\query_clusters_rebuilt_refined
+```
+
+The refined review CSV carries the parent annotations as hints and separates
+`suggested_label` (topic), `query_form` (for example narration or inquiry),
+`memory_type`, and `context_need`. Long multi-topic turns remain a limitation of
+hard clustering; treat broad catch-all children as sampling strata rather than
+forcing a single semantic label.
+
+Run the selection-only seed benchmark without calling an answer model:
+
+```powershell
+python -m chat_proxy.context_selection_benchmark `
+  --db "C:\Users\ellat\Desktop\K_Space\kmlog-search\chat_data\chat_search_rebuilt.db" `
+  --seed benchmark_outputs\context_selection_seed_v1\seed.csv `
+  --output-dir benchmark_outputs\context_selection_pilot
+```
+
+Add `--router` for source-routing A/B. Add `--query-planner` separately to test
+compact query rewriting. Keep each output directory separate from the baseline.
+Add `--curated-sources --no-retrieval` to isolate current mother-memory, Core
+Anchor, and World Book selection. Curated sources are current snapshots, so
+this mode measures topical usefulness rather than historical as-of correctness.
+
+The runner clones the static source DB into a temporary directory, calls
+`/build_context` with `as_of_message_id` and `as_of_timestamp`, and verifies that
+recent turns and KMLog results predate the seed. KMLog `/search` must be running
+at `CHAT_PROXY_KMLOG_SEARCH_URL`; use `--no-retrieval` to test recent-turn
+selection alone. Mutable worldbook, core-anchor, and rolling-summary layers are
+disabled because historical versions are not currently available. The output
+CSV includes retrieved previews and blank manual relevance columns.
+
+For direct `/build_context` historical previews, `as_of_message_id` is exclusive
+for recent turns and `as_of_timestamp` is exclusive for KMLog retrieval. A
+historical cutoff suppresses the current rolling summary to prevent leakage.
+
+## Typed retrieval evidence
+
+`chat_proxy.retrieval_contracts` defines a source-level `MemoryItem` and a
+query-level `RetrievalCandidate`. Canonical provenance, lifecycle, validity, and
+supersession stay on the item; freshness, scoring, match reasons, rank, and
+injection policy stay on the candidate. See
+[`docs/retrieval_contract.md`](docs/retrieval_contract.md) for the contract and
+source-role mapping. The contract is standalone for now and does not change
+adapter behavior until each source is migrated explicitly.
+
 To serve the web UI from the same FastAPI process, build it first:
 
 ```powershell
@@ -207,6 +295,14 @@ is `kmlog_search`, which calls the already deployed kmlog `/search` HTTP API:
 ```text
 CHAT_PROXY_RETRIEVAL_ENABLED=true
 CHAT_PROXY_RETRIEVAL_INJECT_ENABLED=false
+CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED=false
+CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED=false
+CHAT_PROXY_MOTHER_MEMORY_ENABLED=false
+CHAT_PROXY_MOTHER_MEMORY_INJECT_ENABLED=false
+CHAT_PROXY_MOTHER_MEMORY_URL=http://127.0.0.1:8013
+CHAT_PROXY_MOTHER_MEMORY_API_KEY=
+CHAT_PROXY_MOTHER_MEMORY_LIMIT=4
+CHAT_PROXY_MOTHER_MEMORY_CHARS_TOTAL=1600
 CHAT_PROXY_KMLOG_SEARCH_URL=http://127.0.0.1:8013
 CHAT_PROXY_KMLOG_SEARCH_API_KEY=
 CHAT_PROXY_KMLOG_SEARCH_LIMIT=5
@@ -216,6 +312,21 @@ CHAT_PROXY_KMLOG_SEARCH_CHARS_TOTAL=1200
 The web UI has separate `Retrieve kmlog` and `Inject` toggles. Retrieval results
 always appear in the Debug trace when retrieval is enabled; they are only added
 to the model context when `Inject` is also enabled.
+
+The optional retrieval router is deterministic and disabled by default. It
+selects candidate sources (`recent`, chat history, Core Anchors, mother memory,
+or World Book). At present only the chat-history decision is executed; the other
+source choices are recorded in the Debug trace for later adapters. The separate
+query-planner flag enables compact chat-history query rewriting, allowing
+router-only and router-plus-planner A/B runs.
+
+When mother-memory retrieval is enabled, the proxy calls KMLog
+`POST /memory/route` and records section paths, titles, route reasons, source
+metadata, and content previews in Debug. Injection remains separately disabled
+by default. Router mode also makes Core Anchor and World Book selection
+current-turn-only, excludes generic `constantActive` World Book entries, and
+supports `core_anchors_inject=false` / `worldbook_inject=false` for selection
+benchmarks.
 
 Core Anchors can be injected as a compact boot pack before the upstream request.
 They are fetched from the kmlog `/core_anchors` API, selected by a stable

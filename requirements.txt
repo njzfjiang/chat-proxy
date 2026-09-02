@@ -3,3 +3,4 @@ httpx
 uvicorn[standard]
 pytest
 anyio
+scikit-learn

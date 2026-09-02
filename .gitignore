@@ -9,3 +9,4 @@ venv/
 *.db-wal
 web/node_modules/
 web/dist/
+benchmark_outputs/

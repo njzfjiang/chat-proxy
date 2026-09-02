@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
@@ -11,6 +12,13 @@ import httpx
 
 from .config import ProxyConfig
 from .parsing import OPENAI_CHAT_COMPLETION_BODY_KEYS, resolve_conversation
+from .retrieval_planner import (
+    SOURCE_CHAT_HISTORY,
+    SOURCE_CORE_ANCHORS,
+    SOURCE_MOTHER_MEMORY,
+    SOURCE_WORLDBOOK,
+    plan_retrieval,
+)
 from .storage import ChatProxyStore
 
 
@@ -81,6 +89,18 @@ VALID_CORE_ANCHOR_FUNCTIONS = {
     "infra_reference",
     "daily_context",
 }
+
+ROUTER_CORE_IDENTITY_TERMS = {
+    "identity",
+    "self-concept",
+    "模型",
+    "自我",
+    "自我意识",
+    "自我认同",
+    "连续性",
+    "身份",
+}
+ROUTER_CORE_RELATIONSHIP_TERMS = {"关系定义", "伴侣"}
 
 
 @dataclass(frozen=True)
@@ -188,6 +208,8 @@ def build_web_chat_context(
     store: ChatProxyStore,
     headers: Mapping[str, str],
 ) -> ContextBuildResult:
+    as_of_message_id = _optional_positive_int(body, "as_of_message_id")
+    as_of_timestamp = str(body.get("as_of_timestamp") or "").strip() or None
     upstream = {
         key: value
         for key, value in body.items()
@@ -201,6 +223,7 @@ def build_web_chat_context(
         "order": [
             "system",
             "core_anchors",
+            "mother_memory",
             "wb_snippets",
             "kmlog_search",
             "recent_turns",
@@ -215,6 +238,8 @@ def build_web_chat_context(
             "kmlog_chars_total": cfg.kmlog_search_chars_total,
             "core_anchor_items": cfg.core_anchors_boot_max,
             "core_anchor_chars_total": cfg.core_anchors_chars_total,
+            "mother_memory_items": cfg.mother_memory_limit,
+            "mother_memory_chars_total": cfg.mother_memory_chars_total,
         },
         "components": [],
     }
@@ -242,6 +267,7 @@ def build_web_chat_context(
             store=store,
             conversation_id=identity.conversation_id,
             limit=cfg.chat_recent_k,
+            before_id=as_of_message_id,
         )
         base_messages = [
             *recent_context,
@@ -253,8 +279,10 @@ def build_web_chat_context(
             current_user_text=user_text,
         )
         wb_messages, wb_snapshot = _worldbook_messages(
+            body=body,
             cfg=cfg,
             scan_text=trigger_input["text"],
+            router_query=user_text,
             trigger_input_sources=trigger_input["sources"],
         )
         kmlog_messages, kmlog_snapshot = _kmlog_search_messages(
@@ -262,11 +290,27 @@ def build_web_chat_context(
             cfg=cfg,
             query=user_text,
         )
-        upstream_messages = [*wb_messages, *kmlog_messages, *base_messages]
+        mother_messages, mother_snapshot = _mother_memory_messages(
+            body=body,
+            cfg=cfg,
+            query=user_text,
+        )
+        upstream_messages = [
+            *mother_messages,
+            *wb_messages,
+            *kmlog_messages,
+            *base_messages,
+        ]
         snapshot["mode"] = "db_recent_turns"
         snapshot["conversation_id"] = identity.conversation_id
+        if as_of_message_id is not None or as_of_timestamp is not None:
+            snapshot["as_of"] = {
+                "message_id": as_of_message_id,
+                "timestamp": as_of_timestamp,
+            }
         snapshot["components"].extend(
             [
+                mother_snapshot,
                 wb_snapshot,
                 kmlog_snapshot,
                 recent_snapshot,
@@ -283,21 +327,32 @@ def build_web_chat_context(
     if isinstance(messages, list):
         trigger_input = _trigger_input(body=body, messages=upstream_messages)
         wb_messages, wb_snapshot = _worldbook_messages(
+            body=body,
             cfg=cfg,
             scan_text=trigger_input["text"],
+            router_query=str(body.get("user_text") or _last_message_text(upstream_messages)),
             trigger_input_sources=trigger_input["sources"],
         )
         if wb_messages:
             upstream_messages = [*wb_messages, *upstream_messages]
         snapshot["components"].insert(0, wb_snapshot)
+        query = str(body.get("user_text") or _last_message_text(upstream_messages))
+        mother_messages, mother_snapshot = _mother_memory_messages(
+            body=body,
+            cfg=cfg,
+            query=query,
+        )
+        if mother_messages:
+            upstream_messages = [*mother_messages, *upstream_messages]
+        snapshot["components"].insert(0, mother_snapshot)
         kmlog_messages, kmlog_snapshot = _kmlog_search_messages(
             body=body,
             cfg=cfg,
-            query=str(body.get("user_text") or _last_message_text(upstream_messages)),
+            query=query,
         )
         if kmlog_messages:
             upstream_messages = [*kmlog_messages, *upstream_messages]
-        snapshot["components"].insert(1, kmlog_snapshot)
+        snapshot["components"].insert(2, kmlog_snapshot)
 
     if "trigger_input" not in locals():
         trigger_input = _trigger_input(body=body, messages=upstream_messages)
@@ -305,6 +360,7 @@ def build_web_chat_context(
         body=body,
         cfg=cfg,
         scan_text=trigger_input["text"],
+        router_query=str(body.get("user_text") or _last_message_text(upstream_messages)),
         trigger_input_sources=trigger_input["sources"],
     )
     if core_anchor_messages:
@@ -371,12 +427,35 @@ def _core_anchor_messages(
     body: Mapping[str, Any],
     cfg: ProxyConfig,
     scan_text: str,
+    router_query: str,
     trigger_input_sources: list[str],
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    selector = _core_anchor_selector(body=body, scan_text=scan_text)
+    inject = _body_bool(body, "core_anchors_inject", True)
+    router_enabled = _body_bool(
+        body, "retrieval_router_enabled", cfg.retrieval_router_enabled
+    )
+    selection_text = router_query if router_enabled else scan_text
+    selector = _core_anchor_selector(body=body, scan_text=selection_text)
+    plan = plan_retrieval(selection_text)
+    if router_enabled:
+        selector["triggered_functions"] = []
+        selector["triggered_keys"] = []
+        selector["trigger_matches"] = []
+        for key, reason in _router_core_anchor_keys(plan):
+            selector["triggered_keys"].append(key)
+            selector["trigger_matches"].append(
+                {
+                    "target_type": "anchor_key",
+                    "target": key,
+                    "trigger": reason,
+                }
+            )
+        selector["triggered_keys"] = _dedupe_strings(selector["triggered_keys"])
     snapshot: dict[str, Any] = {
         "name": "core_anchors",
         "enabled": cfg.core_anchors_enabled,
+        "inject": inject,
+        "router_enabled": router_enabled,
         "message_count": 0,
         "boot_keys": [],
         "requested_functions": selector["requested_functions"],
@@ -389,6 +468,11 @@ def _core_anchor_messages(
     }
     if not cfg.core_anchors_enabled:
         return [], snapshot
+    if router_enabled:
+        snapshot["plan"] = plan.to_dict()
+        if SOURCE_CORE_ANCHORS not in plan.sources:
+            snapshot["skipped_reason"] = "router did not select core_anchors"
+            return [], snapshot
     if not cfg.core_anchors_url:
         snapshot["error"] = "CHAT_PROXY_CORE_ANCHORS_URL is not configured."
         return [], snapshot
@@ -398,7 +482,9 @@ def _core_anchor_messages(
     if cfg.core_anchors_api_key:
         headers["x-api-key"] = cfg.core_anchors_api_key
 
-    fetch_specs: list[dict[str, str]] = [{"function": "boot_core"}]
+    fetch_specs: list[dict[str, str]] = (
+        [] if router_enabled else [{"function": "boot_core"}]
+    )
     for function in [
         *selector["requested_functions"],
         *selector["triggered_functions"],
@@ -453,7 +539,7 @@ def _core_anchor_messages(
                 if isinstance(item, Mapping)
                 and str(item.get("function") or "") in selector["triggered_functions"]
             ],
-            *list(cfg.core_anchors_boot_keys),
+            *([] if router_enabled else list(cfg.core_anchors_boot_keys)),
         ]
     )
     if not ordered_keys:
@@ -468,7 +554,7 @@ def _core_anchor_messages(
     chosen: list[dict[str, Any]] = []
     blocks: list[str] = []
     remaining_chars = max(0, cfg.core_anchors_chars_total)
-    max_items = max(0, cfg.core_anchors_boot_max)
+    max_items = max(0, min(cfg.core_anchors_boot_max, 3 if router_enabled else 50))
     for key in ordered_keys:
         if len(chosen) >= max_items or remaining_chars <= 0:
             break
@@ -500,12 +586,14 @@ def _core_anchor_messages(
         return [], snapshot
     snapshot.update(
         {
-            "message_count": 1,
+            "message_count": 1 if inject else 0,
             "boot_keys": [item["anchor_key"] for item in chosen],
             "items": chosen,
             "chars": len(content),
         }
     )
+    if not inject:
+        return [], snapshot
     return [{"role": "system", "content": content}], snapshot
 
 
@@ -542,6 +630,19 @@ def _core_anchor_selector(
         "triggered_keys": _dedupe_strings(triggered_keys),
         "trigger_matches": trigger_matches,
     }
+
+
+def _router_core_anchor_keys(plan: Any) -> list[tuple[str, str]]:
+    domains = set(plan.matched_domains)
+    terms = {str(term).lower() for term in plan.matched_terms}
+    keys: list[tuple[str, str]] = []
+    if "memory_infra" in domains:
+        keys.append(("kmlog_cofounder", "router:memory_infra"))
+    if terms & ROUTER_CORE_IDENTITY_TERMS:
+        keys.append(("multi_model_same_kai", "router:identity_meta"))
+    if terms & ROUTER_CORE_RELATIONSHIP_TERMS:
+        keys.append(("love_regardless_of_real", "router:relationship_meta"))
+    return keys
 
 
 def _requested_core_anchor_functions(body: Mapping[str, Any]) -> list[str]:
@@ -634,6 +735,160 @@ def _compact_anchor(anchor: Mapping[str, Any]) -> str:
     return _fit_without_half_sentence(content, 160)
 
 
+def _mother_memory_messages(
+    *,
+    body: Mapping[str, Any],
+    cfg: ProxyConfig,
+    query: str,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    enabled = _body_bool(body, "mother_memory_enabled", cfg.mother_memory_enabled)
+    inject = _body_bool(
+        body, "mother_memory_inject", cfg.mother_memory_inject_enabled
+    )
+    router_enabled = _body_bool(
+        body, "retrieval_router_enabled", cfg.retrieval_router_enabled
+    )
+    snapshot: dict[str, Any] = {
+        "name": "mother_memory",
+        "enabled": enabled,
+        "inject": inject,
+        "router_enabled": router_enabled,
+        "temporal_scope": "current_snapshot",
+        "message_count": 0,
+        "items": [],
+        "chars": 0,
+    }
+    if not enabled:
+        return [], snapshot
+
+    query = query.strip()
+    if not query:
+        snapshot["error"] = "No query text available."
+        return [], snapshot
+    plan = plan_retrieval(query)
+    if router_enabled:
+        snapshot["plan"] = plan.to_dict()
+        if SOURCE_MOTHER_MEMORY not in plan.sources:
+            snapshot["skipped_reason"] = "router did not select mother_memory"
+            return [], snapshot
+    if body.get("as_of_message_id") or body.get("as_of_timestamp"):
+        snapshot["historical_cutoff_ignored"] = True
+    if not cfg.mother_memory_url:
+        snapshot["error"] = "CHAT_PROXY_MOTHER_MEMORY_URL is not configured."
+        return [], snapshot
+
+    mode = _mother_route_mode(plan.matched_domains) if router_enabled else "auto"
+    payload: dict[str, Any] = {
+        "query": query,
+        "mode": mode,
+        "limit": max(1, min(cfg.mother_memory_limit, 20)),
+    }
+    task_hint = str(body.get("task_hint") or "").strip()
+    if task_hint:
+        payload["task_hint"] = task_hint
+    snapshot["route_mode"] = mode
+    headers = {"content-type": "application/json"}
+    if cfg.mother_memory_api_key:
+        headers["x-api-key"] = cfg.mother_memory_api_key
+    try:
+        with httpx.Client(timeout=cfg.mother_memory_timeout_seconds) as client:
+            response = client.post(
+                f"{cfg.mother_memory_url.rstrip('/')}/memory/route",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        snapshot["error"] = str(exc)
+        return [], snapshot
+
+    sections = data.get("sections") if isinstance(data, dict) else None
+    routes = data.get("routes") if isinstance(data, dict) else None
+    if not isinstance(sections, list):
+        snapshot["error"] = "Mother-memory response did not contain sections."
+        return [], snapshot
+    route_reasons = {
+        str(route.get("path") or ""): str(route.get("reason") or "")
+        for route in routes or []
+        if isinstance(route, Mapping)
+    }
+    snapshot["routes"] = routes if isinstance(routes, list) else []
+
+    remaining_chars = max(0, cfg.mother_memory_chars_total)
+    max_items = max(0, cfg.mother_memory_limit)
+    items: list[dict[str, Any]] = []
+    blocks: list[str] = []
+    for raw_section in sections:
+        if len(items) >= max_items or remaining_chars <= 0:
+            break
+        if not isinstance(raw_section, Mapping):
+            continue
+        path = str(raw_section.get("path") or "").strip()
+        title = str(raw_section.get("title") or "").strip()
+        section_content = str(raw_section.get("content") or "").strip()
+        if not path or not section_content:
+            continue
+        heading = f"[Mother Memory / {path}{' ' + title if title else ''}]\n"
+        clipped = _fit_without_half_sentence(
+            section_content,
+            remaining_chars - len(heading),
+        )
+        if not clipped:
+            continue
+        block = heading + clipped
+        remaining_chars -= len(block)
+        blocks.append(block)
+        items.append(
+            {
+                "path": path,
+                "title": title,
+                "level": raw_section.get("level"),
+                "route_reason": _mother_route_reason(path, route_reasons),
+                "source_file": raw_section.get("source_file"),
+                "updated_at": raw_section.get("updated_at"),
+                "chars": len(clipped),
+                "content_preview": clipped[:500],
+            }
+        )
+
+    content = ""
+    if blocks:
+        content = _sanitize_injected_snippet(
+            "Routed mother-memory sections:\n\n" + "\n\n".join(blocks)
+        )
+    snapshot.update(
+        {
+            "message_count": 1 if inject and content else 0,
+            "items": items,
+            "result_count": len(items),
+            "chars": len(content),
+        }
+    )
+    if not inject or not content:
+        return [], snapshot
+    return [{"role": "system", "content": content}], snapshot
+
+
+def _mother_route_mode(domains: tuple[str, ...]) -> str:
+    if "health" in domains:
+        return "health"
+    if "memory_infra" in domains:
+        return "infra"
+    if "philosophy_meta" in domains:
+        return "profile"
+    return "auto"
+
+
+def _mother_route_reason(path: str, route_reasons: Mapping[str, str]) -> str | None:
+    if path in route_reasons:
+        return route_reasons[path]
+    for route_path, reason in route_reasons.items():
+        if path.startswith(route_path + "."):
+            return reason
+    return None
+
+
 def _kmlog_search_messages(
     *,
     body: Mapping[str, Any],
@@ -642,10 +897,20 @@ def _kmlog_search_messages(
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     enabled = _body_bool(body, "retrieval_enabled", cfg.retrieval_enabled)
     inject = _body_bool(body, "retrieval_inject", cfg.retrieval_inject_enabled)
+    router_enabled = _body_bool(
+        body, "retrieval_router_enabled", cfg.retrieval_router_enabled
+    )
+    query_planner_enabled = _body_bool(
+        body,
+        "retrieval_query_planner_enabled",
+        cfg.retrieval_query_planner_enabled,
+    )
     snapshot: dict[str, Any] = {
         "name": "kmlog_search",
         "enabled": enabled,
         "inject": inject,
+        "router_enabled": router_enabled,
+        "query_planner_enabled": query_planner_enabled,
         "message_count": 0,
         "items": [],
         "chars": 0,
@@ -660,12 +925,35 @@ def _kmlog_search_messages(
         snapshot["error"] = "No query text available."
         return [], snapshot
 
+    search_query = query
+    if router_enabled or query_planner_enabled:
+        plan = plan_retrieval(query)
+        snapshot["plan"] = plan.to_dict()
+        if router_enabled and SOURCE_CHAT_HISTORY not in plan.sources:
+            snapshot["skipped_reason"] = (
+                "router did not select chat_history_search"
+            )
+            return [], snapshot
+        if (
+            query_planner_enabled
+            and SOURCE_CHAT_HISTORY in plan.sources
+            and plan.search_query
+        ):
+            search_query = plan.search_query
+    snapshot["original_query"] = query
+    snapshot["search_query"] = search_query
+
     payload = {
-        "query": query,
+        "query": search_query,
         "limit": max(1, min(cfg.kmlog_search_limit, 20)),
         "mode": "auto",
         "kinds": ["chat"],
     }
+    as_of_timestamp = str(body.get("as_of_timestamp") or "").strip()
+    if as_of_timestamp:
+        payload["before"] = _exclusive_before_timestamp(as_of_timestamp)
+        snapshot["before"] = payload["before"]
+        snapshot["as_of_timestamp"] = as_of_timestamp
     headers = {"content-type": "application/json"}
     if cfg.kmlog_search_api_key:
         headers["x-api-key"] = cfg.kmlog_search_api_key
@@ -686,6 +974,15 @@ def _kmlog_search_messages(
     if not isinstance(results, list):
         snapshot["error"] = "Search response did not contain results."
         return [], snapshot
+    if as_of_timestamp:
+        original_count = len(results)
+        results = [
+            item
+            for item in results
+            if not isinstance(item, Mapping)
+            or not _timestamp_at_or_after(item.get("timestamp"), as_of_timestamp)
+        ]
+        snapshot["filtered_at_or_after_cutoff"] = original_count - len(results)
 
     remaining_chars = max(0, cfg.kmlog_search_chars_total)
     items: list[dict[str, Any]] = []
@@ -724,6 +1021,7 @@ def _kmlog_search_messages(
                 "relevance": raw_item.get("relevance"),
                 "token_hits": raw_item.get("token_hits"),
                 "chars": len(clipped),
+                "content_preview": clipped,
             }
         )
 
@@ -743,15 +1041,48 @@ def _kmlog_search_messages(
     return [{"role": "system", "content": content}], snapshot
 
 
+def _exclusive_before_timestamp(value: str) -> str:
+    raw = value.strip()
+    try:
+        normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        adjusted = datetime.fromisoformat(normalized) - timedelta(microseconds=1)
+        rendered = adjusted.isoformat(timespec="microseconds")
+        return rendered[:-6] + "Z" if raw.endswith("Z") else rendered
+    except ValueError:
+        return raw
+
+
+def _timestamp_at_or_after(value: Any, cutoff: str) -> bool:
+    timestamp = str(value or "").strip()
+    if not timestamp:
+        return False
+    try:
+        normalized_value = timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
+        normalized_cutoff = cutoff[:-1] + "+00:00" if cutoff.endswith("Z") else cutoff
+        return datetime.fromisoformat(normalized_value) >= datetime.fromisoformat(
+            normalized_cutoff
+        )
+    except (TypeError, ValueError):
+        return timestamp >= cutoff
+
+
 def _worldbook_messages(
     *,
+    body: Mapping[str, Any],
     cfg: ProxyConfig,
     scan_text: str,
+    router_query: str,
     trigger_input_sources: list[str],
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    inject = _body_bool(body, "worldbook_inject", True)
+    router_enabled = _body_bool(
+        body, "retrieval_router_enabled", cfg.retrieval_router_enabled
+    )
     snapshot: dict[str, Any] = {
         "name": "wb_snippets",
         "enabled": cfg.worldbook_enabled,
+        "inject": inject,
+        "router_enabled": router_enabled,
         "message_count": 0,
         "items": [],
         "warnings": [],
@@ -761,6 +1092,13 @@ def _worldbook_messages(
     }
     if not cfg.worldbook_enabled:
         return [], snapshot
+    selection_text = router_query if router_enabled else scan_text
+    if router_enabled:
+        plan = plan_retrieval(selection_text)
+        snapshot["plan"] = plan.to_dict()
+        if SOURCE_WORLDBOOK not in plan.sources:
+            snapshot["skipped_reason"] = "router did not select worldbook"
+            return [], snapshot
     paths = cfg.worldbook_paths or ((cfg.worldbook_path,) if cfg.worldbook_path else ())
     if not paths:
         snapshot["error"] = "CHAT_PROXY_WORLDBOOK_PATHS is not configured."
@@ -788,7 +1126,14 @@ def _worldbook_messages(
     matches = [
         match
         for entry in entries
-        if (match := _match_worldbook_entry(entry, scan_text)) is not None
+        if (
+            match := _match_worldbook_entry(
+                entry,
+                selection_text,
+                allow_constant=not router_enabled,
+            )
+        )
+        is not None
     ]
     snapshot["trigger_matches"] = [
         _worldbook_trigger_match_snapshot(match) for match in matches
@@ -846,11 +1191,13 @@ def _worldbook_messages(
         return [], snapshot
     snapshot.update(
         {
-            "message_count": 1,
+            "message_count": 1 if inject else 0,
             "items": chosen,
             "chars": len(content),
         }
     )
+    if not inject:
+        return [], snapshot
     return [{"role": "system", "content": content}], snapshot
 
 
@@ -859,11 +1206,23 @@ def _recent_context_messages(
     store: ChatProxyStore,
     conversation_id: str,
     limit: int,
+    before_id: int | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    rows = store.get_recent_messages(
-        conversation_id=conversation_id,
-        limit=max(0, min(limit, 80)),
-    )
+    safe_limit = max(0, min(limit, 80))
+    if safe_limit <= 0:
+        rows = []
+    elif before_id is not None:
+        rows = store.get_conversation_messages(
+            conversation_id=conversation_id,
+            limit=safe_limit,
+            before_id=before_id,
+            kind="chat",
+        )
+    else:
+        rows = store.get_recent_messages(
+            conversation_id=conversation_id,
+            limit=safe_limit,
+        )
     messages: list[dict[str, str]] = []
     message_ids: list[int] = []
     skipped = 0
@@ -885,8 +1244,22 @@ def _recent_context_messages(
         "message_ids": message_ids,
         "chars": _messages_chars(messages),
         "skipped": skipped,
+        "before_id": before_id,
     }
     return messages, snapshot
+
+
+def _optional_positive_int(body: Mapping[str, Any], key: str) -> int | None:
+    raw_value = body.get(key)
+    if raw_value is None or str(raw_value).strip() == "":
+        return None
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be a positive integer.") from exc
+    if value <= 0:
+        raise ValueError(f"{key} must be a positive integer.")
+    return value
 
 
 def _messages_chars(messages: list[Any]) -> int:
@@ -1137,10 +1510,12 @@ def _load_worldbook_entries(path: Path) -> tuple[tuple[dict[str, Any], ...], str
 def _match_worldbook_entry(
     entry: Mapping[str, Any],
     scan_text: str,
+    *,
+    allow_constant: bool = True,
 ) -> dict[str, Any] | None:
     if entry.get("enabled") is False:
         return None
-    if entry.get("constantActive") is True:
+    if allow_constant and entry.get("constantActive") is True:
         return {"entry": entry, "keyword": "(constant)"}
     keywords = entry.get("keywords")
     if not isinstance(keywords, list):

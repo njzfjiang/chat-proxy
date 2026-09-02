@@ -1364,7 +1364,11 @@ async def test_build_context_previews_messages_without_calling_upstream(tmp_path
     assert payload["messages"] == [
         {
             "role": "system",
-            "content": "Rolling summary of this conversation so far:\nPreview rolling summary.",
+            "content": (
+                "Rolling continuity cache (derived and fallible; not authoritative "
+                "memory).\nUse it only as a continuity hint. Prefer current messages "
+                "and curated sources when they conflict:\nPreview rolling summary."
+            ),
         },
         {"role": "user", "content": "older context"},
         {"role": "user", "content": "new preview text"},
@@ -1387,6 +1391,325 @@ async def test_build_context_previews_messages_without_calling_upstream(tmp_path
     conn.close()
     assert request_count == 0
     assert message_count == 1
+
+
+@pytest.mark.anyio
+async def test_build_context_as_of_cutoff_excludes_future_context(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    search_payloads = []
+
+    class FakeSearchResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "id": 42,
+                        "timestamp": "2026-05-17T23:59:00Z",
+                        "role": "user",
+                        "content_preview": "historical search hit",
+                    },
+                    {
+                        "id": 99,
+                        "timestamp": "2026-05-18T00:01:00Z",
+                        "role": "user",
+                        "content_preview": "must be filtered at the cutoff",
+                    },
+                ]
+            }
+
+    class FakeSearchClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            search_payloads.append({"url": url, "json": json})
+            return FakeSearchResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeSearchClient)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            chat_model="backend-chat-model",
+            chat_recent_k=10,
+            kmlog_search_url="http://kmlog",
+        )
+    )
+    old_id = app.state.store.insert_message(
+        timestamp="2026-05-18T00:00:00Z",
+        role="user",
+        content="historical context",
+        conversation_title="kai",
+        conversation_id="preview-chat",
+        message_id="preview-old-user",
+    )
+    seed_id = app.state.store.insert_message(
+        timestamp="2026-05-18T00:01:00Z",
+        role="user",
+        content="seed stored in database",
+        conversation_title="kai",
+        conversation_id="preview-chat",
+        message_id="preview-seed-user",
+    )
+    app.state.store.insert_message(
+        timestamp="2026-05-18T00:02:00Z",
+        role="assistant",
+        content="future answer",
+        conversation_title="kai",
+        conversation_id="preview-chat",
+        message_id="preview-future-assistant",
+    )
+    app.state.store.upsert_summary(
+        conversation_id="preview-chat",
+        summary="Summary containing future information.",
+        last_message_id=seed_id + 1,
+        updated_at="2026-05-18T00:02:01Z",
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/build_context",
+            json={
+                "conversation_id": "preview-chat",
+                "user_text": "seed stored in database",
+                "as_of_message_id": seed_id,
+                "as_of_timestamp": "2026-05-18T00:01:00Z",
+                "retrieval_enabled": True,
+            },
+        )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["messages"] == [
+        {"role": "user", "content": "historical context"},
+        {"role": "user", "content": "seed stored in database"},
+    ]
+    assert payload["debug"]["source_ids"]["recent_turns"] == [f"message:{old_id}"]
+    assert payload["debug"]["source_ids"]["kmlog_search"] == ["kmlog:42"]
+    assert "rolling_short" not in payload["debug"]["included_layers"]
+    assert any("no as-of summary" in note for note in payload["debug"]["notes"])
+    assert payload["context_packet"]["as_of"] == {
+        "message_id": seed_id,
+        "timestamp": "2026-05-18T00:01:00Z",
+    }
+    assert search_payloads[0]["json"]["before"] == "2026-05-18T00:00:59.999999Z"
+
+
+@pytest.mark.anyio
+async def test_build_context_router_skips_history_for_quote_sharing(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    class UnexpectedSearchClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("router should skip KMLog search")
+
+    monkeypatch.setattr(
+        "chat_proxy.context_builder.httpx.Client", UnexpectedSearchClient
+    )
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            kmlog_search_url="http://kmlog",
+            retrieval_enabled=True,
+            retrieval_router_enabled=True,
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        response = await client.post(
+            "/build_context",
+            json={
+                "conversation_id": "quote-chat",
+                "user_text": "给你看歌词",
+            },
+        )
+
+    assert response.status_code == 200
+    component = next(
+        item
+        for item in response.json()["context_packet"]["components"]
+        if item["name"] == "kmlog_search"
+    )
+    assert component["router_enabled"] is True
+    assert component["plan"]["matched_domains"] == ["quote_sharing"]
+    assert component["skipped_reason"] == ("router did not select chat_history_search")
+    assert component["items"] == []
+
+
+@pytest.mark.anyio
+async def test_build_context_query_planner_is_separate_from_router(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    queries = []
+
+    class EmptySearchResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": []}
+
+    class FakeSearchClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            queries.append(json["query"])
+            return EmptySearchResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeSearchClient)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            kmlog_search_url="http://kmlog",
+            retrieval_enabled=True,
+        )
+    )
+    user_text = "今天把 vault 的锚点导入 mem0 做检索，但是噪音很大"
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        router_only = await client.post(
+            "/build_context",
+            json={
+                "conversation_id": "router-only",
+                "user_text": user_text,
+                "retrieval_router_enabled": True,
+            },
+        )
+        planned = await client.post(
+            "/build_context",
+            json={
+                "conversation_id": "router-planner",
+                "user_text": user_text,
+                "retrieval_router_enabled": True,
+                "retrieval_query_planner_enabled": True,
+            },
+        )
+
+    assert router_only.status_code == 200
+    assert planned.status_code == 200
+    assert queries[0] == user_text
+    assert queries[1] == "mem0 vault 锚点 检索"
+
+
+@pytest.mark.anyio
+async def test_build_context_routes_health_to_mother_memory_without_injecting(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    calls = []
+
+    class MotherResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "routes": [{"path": "C", "reason": "mode: health"}],
+                "sections": [
+                    {
+                        "path": "C",
+                        "title": "Health and safety",
+                        "level": 2,
+                        "content": "Known health baseline. Prefer recent symptoms.",
+                        "source_file": "mother.md",
+                        "updated_at": "2026-06-01T00:00:00Z",
+                    }
+                ],
+                "inject": False,
+            }
+
+    class FakeMotherClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            calls.append({"url": url, "headers": headers, "json": json})
+            return MotherResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeMotherClient)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            retrieval_router_enabled=True,
+            mother_memory_enabled=True,
+            mother_memory_url="http://kmlog",
+            mother_memory_api_key="mother-key",
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        response = await client.post(
+            "/build_context",
+            json={
+                "conversation_id": "health-chat",
+                "user_text": "昨晚失眠，今天牙疼",
+            },
+        )
+
+    assert response.status_code == 200
+    assert calls[0]["url"] == "http://kmlog/memory/route"
+    assert calls[0]["headers"]["x-api-key"] == "mother-key"
+    assert calls[0]["json"]["mode"] == "health"
+    payload = response.json()
+    component = next(
+        item
+        for item in payload["context_packet"]["components"]
+        if item["name"] == "mother_memory"
+    )
+    assert component["inject"] is False
+    assert component["result_count"] == 1
+    assert component["items"][0]["path"] == "C"
+    assert payload["debug"]["source_ids"]["mother_memory"] == ["mother:C"]
+    assert all(
+        "Routed mother-memory sections" not in message["content"]
+        for message in payload["messages"]
+    )
 
 
 @pytest.mark.anyio
