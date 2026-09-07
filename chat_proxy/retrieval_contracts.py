@@ -4,12 +4,19 @@ import json
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
 from types import MappingProxyType
 from typing import Any, Mapping
 
 
-class SourceType(StrEnum):
+class _StringEnum(str, Enum):
+    """Python 3.10-compatible subset of enum.StrEnum."""
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class SourceType(_StringEnum):
     RECENT_TURNS = "recent_turns"
     ROLLING_SUMMARY = "rolling_summary"
     RECENT_GOALS = "recent_goals"
@@ -21,7 +28,7 @@ class SourceType(StrEnum):
     CHAT_HISTORY = "chat_history"
 
 
-class EpistemicRole(StrEnum):
+class EpistemicRole(_StringEnum):
     CURRENT_STATE = "current_state"
     DERIVED_CONTEXT_CACHE = "derived_context_cache"
     VALIDATED_MEMORY = "validated_memory"
@@ -31,14 +38,14 @@ class EpistemicRole(StrEnum):
     EPISODIC_EVIDENCE = "episodic_evidence"
 
 
-class Sensitivity(StrEnum):
+class Sensitivity(_StringEnum):
     STANDARD = "standard"
     PERSONAL = "personal"
     SENSITIVE = "sensitive"
     EXPLICIT_INTIMACY = "explicit_intimacy"
 
 
-class FreshnessState(StrEnum):
+class FreshnessState(_StringEnum):
     CURRENT = "current"
     AGING = "aging"
     STALE = "stale"
@@ -46,7 +53,7 @@ class FreshnessState(StrEnum):
     UNKNOWN = "unknown"
 
 
-class MatchKind(StrEnum):
+class MatchKind(_StringEnum):
     SOURCE_ROUTE = "source_route"
     STRUCTURED_FILTER = "structured_filter"
     TOPIC = "topic"
@@ -381,7 +388,7 @@ def _bounded_score(value: float, field_name: str) -> None:
         raise ValueError(f"{field_name} must be between 0 and 1.")
 
 
-def _require_enum(value: Any, enum_type: type[StrEnum], field_name: str) -> None:
+def _require_enum(value: Any, enum_type: type[_StringEnum], field_name: str) -> None:
     if not isinstance(value, enum_type):
         raise TypeError(f"{field_name} must be a {enum_type.__name__} value.")
 

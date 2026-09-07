@@ -18,6 +18,11 @@ from chat_proxy.retrieval_contracts import (
 )
 
 
+def test_string_enums_keep_strenum_value_semantics_on_python_310():
+    assert str(SourceType.REVIEWED_MEMORY) == "reviewed_memory"
+    assert json.dumps(SourceType.REVIEWED_MEMORY) == '"reviewed_memory"'
+
+
 def _reviewed_item() -> MemoryItem:
     return MemoryItem(
         source_type=SourceType.REVIEWED_MEMORY,
