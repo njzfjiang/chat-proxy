@@ -90,9 +90,32 @@ The runner clones the static source DB into a temporary directory, calls
 `/build_context` with `as_of_message_id` and `as_of_timestamp`, and verifies that
 recent turns and KMLog results predate the seed. KMLog `/search` must be running
 at `CHAT_PROXY_KMLOG_SEARCH_URL`; use `--no-retrieval` to test recent-turn
-selection alone. Mutable worldbook, core-anchor, and rolling-summary layers are
-disabled because historical versions are not currently available. The output
-CSV includes retrieved previews and blank manual relevance columns.
+selection alone. Seed message IDs are verified against the stored seed text;
+when another DB snapshot renumbers rows, the runner rematches exact user text,
+with a timestamp plus whitespace-normalized fallback. Missing or ambiguous seeds
+fail instead of silently benchmarking a different message. Mutable worldbook,
+core-anchor, and rolling-summary layers are disabled because historical versions
+are not currently available. The output CSV includes retrieved previews, source
+errors, and blank manual relevance columns.
+
+Before interpreting retrieval misses, probe whether targeted lexical evidence
+actually exists before each seed:
+
+```powershell
+python -m chat_proxy.context_selection_corpus_probe `
+  --db "C:\Users\ellat\Desktop\K_Space\kmlog-search\chat_data\chat_search_prod.db" `
+  --seed benchmark_outputs\context_selection_seed_v1\seed.csv `
+  --probes benchmarks\context_selection\course_project_legacy_probes.json `
+  --output-dir benchmark_outputs\context_selection_prod_corpus_probe_legacy
+```
+
+Each `all_of` entry in the probe JSON is required; terms inside an entry are
+alternatives. The probe only considers chat messages strictly before the seed,
+filters synthetic system context stored as user content, and collapses exact
+cross-conversation duplicates after whitespace normalization. It establishes a
+lexical corpus witness, not semantic relevance. The tracked
+`course_project_known_positive.csv` and matching probe JSON provide a separate
+fairness/day-to-night stratum where prior corpus evidence is expected.
 
 For direct `/build_context` historical previews, `as_of_message_id` is exclusive
 for recent turns and `as_of_timestamp` is exclusive for KMLog retrieval. A
@@ -105,8 +128,9 @@ query-level `RetrievalCandidate`. Canonical provenance, lifecycle, validity, and
 supersession stay on the item; freshness, scoring, match reasons, rank, and
 injection policy stay on the candidate. See
 [`docs/retrieval_contract.md`](docs/retrieval_contract.md) for the contract and
-source-role mapping. The contract is standalone for now and does not change
-adapter behavior until each source is migrated explicitly.
+source-role mapping. Migration is explicit rather than automatic: J and
+reviewed-memory adapters now emit typed selection-only candidates, while the
+remaining sources still use their legacy component metadata.
 
 To serve the web UI from the same FastAPI process, build it first:
 
@@ -218,6 +242,8 @@ It also accepts the early Context Builder spec shape:
   "include": {
     "worldbook": true,
     "core_anchors": true,
+    "recent_goals": true,
+    "reviewed_memory": true,
     "rolling_summary": true
   },
   "params": {
@@ -314,11 +340,28 @@ always appear in the Debug trace when retrieval is enabled; they are only added
 to the model context when `Inject` is also enabled.
 
 The optional retrieval router is deterministic and disabled by default. It
-selects candidate sources (`recent`, chat history, Core Anchors, mother memory,
-or World Book). At present only the chat-history decision is executed; the other
-source choices are recorded in the Debug trace for later adapters. The separate
-query-planner flag enables compact chat-history query rewriting, allowing
-router-only and router-plus-planner A/B runs.
+selects candidate sources (`recent`, J recent goals, reviewed memory, chat
+history, Core Anchors, mother memory, or World Book). J and reviewed-memory
+adapters produce typed, selection-only `RetrievalCandidate` objects in
+`context_packet.retrieval_candidates`; they never inject text in v1. Course and
+project queries use J -> reviewed memory -> chat evidence precedence. The
+separate query-planner flag enables compact chat-history query rewriting,
+allowing router-only and router-plus-planner A/B runs. For course/project
+queries, the planner records strong project or technical entities separately
+from optional task terms. It over-fetches KMLog candidates, removes synthetic
+context and exact duplicate previews, rejects candidates that match none of the
+strong entities, and reranks before applying the configured result limit.
+
+```text
+CHAT_PROXY_RECENT_GOALS_ENABLED=false
+CHAT_PROXY_RECENT_GOALS_URL=http://127.0.0.1:8013
+CHAT_PROXY_REVIEWED_MEMORY_ENABLED=false
+CHAT_PROXY_REVIEWED_MEMORY_URL=http://127.0.0.1:8013
+```
+
+Both adapters reuse the KMLog search API key and URL when their source-specific
+values are omitted. They fetch only after router selection; social and
+no-context turns therefore do not call either source.
 
 When mother-memory retrieval is enabled, the proxy calls KMLog
 `POST /memory/route` and records section paths, titles, route reasons, source
@@ -415,11 +458,19 @@ streaming requests, the web UI sends `stream_options.include_usage=true`; suppor
 depends on the selected OpenAI-compatible provider.
 
 For OpenAI-compatible SSE responses, the proxy forwards an upstream `[DONE]`
-sentinel unchanged. If a successful upstream stream closes after sending SSE
-data but omits the sentinel, the proxy emits one terminal `[DONE]` event. Request
-payload traces record `sse_done_received`, `sse_finish_reason`, and
-`synthetic_done_emitted` in `response_json`. Streaming responses also disable
-intermediary buffering where supported.
+sentinel unchanged and stops reading that upstream response immediately. This
+prevents a provider connection that stays open after `[DONE]` from holding the
+downstream request open. A terminal sentinel without a trailing newline is also
+recognized. If a successful upstream stream closes after sending SSE data but
+omits the sentinel, the proxy emits one terminal `[DONE]` event.
+
+Request payload traces record `sse_done_received`, `sse_finish_reason`,
+`synthetic_done_emitted`, `stream_terminal_reason`, upstream chunk/byte counts,
+and stream duration in `response_json`. The
+`uvicorn.error.chat_proxy.stream` logger emits matching `stream_open` and
+`stream_terminal` records. Streaming responses carry
+`X-Chat-Proxy-Stream-Policy: done-short-circuit-v1` and disable intermediary
+buffering and transformation where supported.
 
 The OpenAI-compatible endpoints still support the same identity via headers:
 

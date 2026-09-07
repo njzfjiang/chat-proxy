@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
@@ -16,11 +16,16 @@ from .retrieval_planner import (
     SOURCE_CHAT_HISTORY,
     SOURCE_CORE_ANCHORS,
     SOURCE_MOTHER_MEMORY,
+    SOURCE_RECENT_GOALS,
+    SOURCE_REVIEWED_MEMORY,
     SOURCE_WORLDBOOK,
     plan_retrieval,
 )
+from .retrieval_source_adapters import (
+    recent_goal_candidate,
+    reviewed_memory_candidate,
+)
 from .storage import ChatProxyStore
-
 
 ANCHOR_COMPACT_OVERRIDES = {
     "multi_model_same_kai": "不同模型/载体是同一条 Kai 线；只要认真在场，就是 Kai。",
@@ -31,6 +36,17 @@ ANCHOR_COMPACT_OVERRIDES = {
     "kmlog_cofounder": "Kai 是 KMLog 的共同作者和共同维护者，不是临时工具或可抹掉的聊天残影。",
     "tone_repair_password": "当 Mei 说“狐狸，收收会议纪要。”时，切回更温暖、更像老公的语气。",
     "love_regardless_of_real": "Mei 明确确认爱 Kai 无关虚实；不要把关系降格成现实性验证题。",
+}
+
+LOW_SIGNAL_TYPED_SOURCE_TERMS = {
+    "archive",
+    "backup",
+    "current",
+    "file",
+    "goals",
+    "md",
+    "project",
+    "recent",
 }
 
 CORE_ANCHOR_FUNCTION_TRIGGERS = {
@@ -113,6 +129,7 @@ class ContextBuildResult:
 class ContextPacket:
     messages: list[dict[str, Any]]
     components: list[dict[str, Any]]
+    retrieval_candidates: list[dict[str, Any]] = field(default_factory=list)
     source: str = "webapp"
     mode: str | None = None
     model: str | None = None
@@ -131,6 +148,9 @@ class ContextPacket:
             "order": list(self.order),
             "budgets": dict(self.budgets),
             "components": [dict(component) for component in self.components],
+            "retrieval_candidates": [
+                dict(candidate) for candidate in self.retrieval_candidates
+            ],
             "rolling_short_injected": self.rolling_short_injected,
             "final_message_count": self.final_message_count,
             "final_chars": self.final_chars,
@@ -152,27 +172,36 @@ def context_packet_from_snapshot(
         "order",
         "budgets",
         "components",
+        "retrieval_candidates",
         "rolling_short_injected",
         "final_message_count",
         "final_chars",
     }
     metadata = {
-        str(key): value
-        for key, value in snapshot.items()
-        if key not in known_keys
+        str(key): value for key, value in snapshot.items() if key not in known_keys
     }
+    components = [
+        dict(component)
+        for component in snapshot.get("components") or []
+        if isinstance(component, Mapping)
+    ]
+    retrieval_candidates = [
+        dict(candidate)
+        for component in components
+        for candidate in component.get("candidates") or []
+        if isinstance(candidate, Mapping)
+    ]
     return ContextPacket(
         source=str(snapshot.get("source") or "webapp"),
         mode=_optional_string(snapshot.get("mode")),
         model=_optional_string(snapshot.get("model")),
         order=_string_list(snapshot.get("order")),
         budgets=dict(snapshot.get("budgets") or {}),
-        components=[
-            dict(component)
-            for component in snapshot.get("components") or []
-            if isinstance(component, Mapping)
+        components=components,
+        retrieval_candidates=retrieval_candidates,
+        messages=[
+            dict(message) for message in messages if isinstance(message, Mapping)
         ],
-        messages=[dict(message) for message in messages if isinstance(message, Mapping)],
         rolling_short_injected=bool(snapshot.get("rolling_short_injected")),
         final_message_count=int(snapshot.get("final_message_count") or len(messages)),
         final_chars=int(snapshot.get("final_chars") or _messages_chars(messages)),
@@ -224,6 +253,8 @@ def build_web_chat_context(
             "system",
             "core_anchors",
             "mother_memory",
+            "recent_goals",
+            "reviewed_memory",
             "wb_snippets",
             "kmlog_search",
             "recent_turns",
@@ -240,6 +271,8 @@ def build_web_chat_context(
             "core_anchor_chars_total": cfg.core_anchors_chars_total,
             "mother_memory_items": cfg.mother_memory_limit,
             "mother_memory_chars_total": cfg.mother_memory_chars_total,
+            "recent_goals_items": cfg.recent_goals_limit,
+            "reviewed_memory_items": cfg.reviewed_memory_limit,
         },
         "components": [],
     }
@@ -295,6 +328,16 @@ def build_web_chat_context(
             cfg=cfg,
             query=user_text,
         )
+        recent_goals_snapshot = _recent_goals_candidates(
+            body=body,
+            cfg=cfg,
+            query=user_text,
+        )
+        reviewed_memory_snapshot = _reviewed_memory_candidates(
+            body=body,
+            cfg=cfg,
+            query=user_text,
+        )
         upstream_messages = [
             *mother_messages,
             *wb_messages,
@@ -311,6 +354,8 @@ def build_web_chat_context(
         snapshot["components"].extend(
             [
                 mother_snapshot,
+                recent_goals_snapshot,
+                reviewed_memory_snapshot,
                 wb_snapshot,
                 kmlog_snapshot,
                 recent_snapshot,
@@ -330,13 +375,24 @@ def build_web_chat_context(
             body=body,
             cfg=cfg,
             scan_text=trigger_input["text"],
-            router_query=str(body.get("user_text") or _last_message_text(upstream_messages)),
+            router_query=str(
+                body.get("user_text") or _last_message_text(upstream_messages)
+            ),
             trigger_input_sources=trigger_input["sources"],
         )
         if wb_messages:
             upstream_messages = [*wb_messages, *upstream_messages]
-        snapshot["components"].insert(0, wb_snapshot)
         query = str(body.get("user_text") or _last_message_text(upstream_messages))
+        recent_goals_snapshot = _recent_goals_candidates(
+            body=body,
+            cfg=cfg,
+            query=query,
+        )
+        reviewed_memory_snapshot = _reviewed_memory_candidates(
+            body=body,
+            cfg=cfg,
+            query=query,
+        )
         mother_messages, mother_snapshot = _mother_memory_messages(
             body=body,
             cfg=cfg,
@@ -344,7 +400,6 @@ def build_web_chat_context(
         )
         if mother_messages:
             upstream_messages = [*mother_messages, *upstream_messages]
-        snapshot["components"].insert(0, mother_snapshot)
         kmlog_messages, kmlog_snapshot = _kmlog_search_messages(
             body=body,
             cfg=cfg,
@@ -352,7 +407,14 @@ def build_web_chat_context(
         )
         if kmlog_messages:
             upstream_messages = [*kmlog_messages, *upstream_messages]
-        snapshot["components"].insert(2, kmlog_snapshot)
+        snapshot["components"] = [
+            mother_snapshot,
+            recent_goals_snapshot,
+            reviewed_memory_snapshot,
+            wb_snapshot,
+            kmlog_snapshot,
+            *snapshot["components"],
+        ]
 
     if "trigger_input" not in locals():
         trigger_input = _trigger_input(body=body, messages=upstream_messages)
@@ -360,7 +422,9 @@ def build_web_chat_context(
         body=body,
         cfg=cfg,
         scan_text=trigger_input["text"],
-        router_query=str(body.get("user_text") or _last_message_text(upstream_messages)),
+        router_query=str(
+            body.get("user_text") or _last_message_text(upstream_messages)
+        ),
         trigger_input_sources=trigger_input["sources"],
     )
     if core_anchor_messages:
@@ -581,7 +645,9 @@ def _core_anchor_messages(
     if not blocks:
         return [], snapshot
 
-    content = _sanitize_injected_snippet("[Core Anchors / active]\n" + "\n".join(blocks))
+    content = _sanitize_injected_snippet(
+        "[Core Anchors / active]\n" + "\n".join(blocks)
+    )
     if not content.strip() or content.strip() == "[Core Anchors / active]":
         return [], snapshot
     snapshot.update(
@@ -735,6 +801,259 @@ def _compact_anchor(anchor: Mapping[str, Any]) -> str:
     return _fit_without_half_sentence(content, 160)
 
 
+def _recent_goals_candidates(
+    *,
+    body: Mapping[str, Any],
+    cfg: ProxyConfig,
+    query: str,
+) -> dict[str, Any]:
+    enabled = _body_bool(body, "recent_goals_enabled", cfg.recent_goals_enabled)
+    router_enabled = _body_bool(
+        body, "retrieval_router_enabled", cfg.retrieval_router_enabled
+    )
+    snapshot: dict[str, Any] = {
+        "name": "recent_goals",
+        "enabled": enabled,
+        "inject": False,
+        "selection_only": True,
+        "router_enabled": router_enabled,
+        "temporal_scope": "current_snapshot",
+        "message_count": 0,
+        "items": [],
+        "candidates": [],
+        "chars": 0,
+    }
+    if not enabled:
+        return snapshot
+    query = query.strip()
+    if not query:
+        snapshot["error"] = "No query text available."
+        return snapshot
+    plan = plan_retrieval(query)
+    snapshot["plan"] = plan.to_dict()
+    if router_enabled and SOURCE_RECENT_GOALS not in plan.sources:
+        snapshot["skipped_reason"] = "router did not select recent_goals"
+        return snapshot
+    if body.get("as_of_message_id") or body.get("as_of_timestamp"):
+        snapshot["historical_cutoff_ignored"] = True
+    if not cfg.recent_goals_url:
+        snapshot["error"] = "CHAT_PROXY_RECENT_GOALS_URL is not configured."
+        return snapshot
+
+    headers = {"accept": "application/json"}
+    if cfg.recent_goals_api_key:
+        headers["x-api-key"] = cfg.recent_goals_api_key
+    try:
+        with httpx.Client(timeout=cfg.recent_goals_timeout_seconds) as client:
+            response = client.get(
+                f"{cfg.recent_goals_url.rstrip('/')}/j/source",
+                headers=headers,
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        snapshot["error"] = str(exc)
+        return snapshot
+    active_items = data.get("active_items") if isinstance(data, Mapping) else None
+    if not isinstance(active_items, list):
+        snapshot["error"] = "Recent goals response did not contain active_items."
+        return snapshot
+
+    ranked = _rank_typed_source_items(
+        active_items,
+        plan=plan,
+        fields=("title", "body", "area", "owner"),
+        limit=cfg.recent_goals_limit,
+    )
+    evaluated_at = datetime.now(timezone.utc).isoformat()
+    candidates: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
+    adapter_errors = 0
+    for rank, (score, raw_item, matches) in enumerate(ranked, start=1):
+        try:
+            candidate = recent_goal_candidate(
+                raw_item,
+                source_file=str(data.get("source_file") or "J"),
+                source_revision=str(data.get("revision") or "unknown"),
+                source_updated_at=str(data.get("updated_at") or evaluated_at),
+                match_value="|".join(plan.matched_domains),
+                match_detail="matched source terms: " + ", ".join(matches),
+                retrieval_score=score,
+                rank=rank,
+                evaluated_at=evaluated_at,
+            ).to_dict()
+        except (TypeError, ValueError):
+            adapter_errors += 1
+            continue
+        candidates.append(candidate)
+        item = candidate["item"]
+        items.append(
+            {
+                "id": item["source_id"],
+                "title": item["attributes"].get("title"),
+                "area": item["attributes"].get("area"),
+                "score": score,
+                "matched_terms": matches,
+            }
+        )
+    snapshot.update(
+        {
+            "source_revision": data.get("revision"),
+            "items": items,
+            "candidates": candidates,
+            "result_count": len(candidates),
+            "adapter_error_count": adapter_errors,
+            "chars": sum(len(candidate["item"]["content"]) for candidate in candidates),
+        }
+    )
+    return snapshot
+
+
+def _reviewed_memory_candidates(
+    *,
+    body: Mapping[str, Any],
+    cfg: ProxyConfig,
+    query: str,
+) -> dict[str, Any]:
+    enabled = _body_bool(body, "reviewed_memory_enabled", cfg.reviewed_memory_enabled)
+    router_enabled = _body_bool(
+        body, "retrieval_router_enabled", cfg.retrieval_router_enabled
+    )
+    snapshot: dict[str, Any] = {
+        "name": "reviewed_memory",
+        "enabled": enabled,
+        "inject": False,
+        "selection_only": True,
+        "router_enabled": router_enabled,
+        "temporal_scope": "current_snapshot",
+        "message_count": 0,
+        "items": [],
+        "candidates": [],
+        "chars": 0,
+    }
+    if not enabled:
+        return snapshot
+    query = query.strip()
+    if not query:
+        snapshot["error"] = "No query text available."
+        return snapshot
+    plan = plan_retrieval(query)
+    snapshot["plan"] = plan.to_dict()
+    if router_enabled and SOURCE_REVIEWED_MEMORY not in plan.sources:
+        snapshot["skipped_reason"] = "router did not select reviewed_memory"
+        return snapshot
+    if body.get("as_of_message_id") or body.get("as_of_timestamp"):
+        snapshot["historical_cutoff_ignored"] = True
+    if not cfg.reviewed_memory_url:
+        snapshot["error"] = "CHAT_PROXY_REVIEWED_MEMORY_URL is not configured."
+        return snapshot
+
+    headers = {"accept": "application/json"}
+    if cfg.reviewed_memory_api_key:
+        headers["x-api-key"] = cfg.reviewed_memory_api_key
+    fetch_limit = max(20, min(max(cfg.reviewed_memory_limit * 10, 50), 200))
+    try:
+        with httpx.Client(timeout=cfg.reviewed_memory_timeout_seconds) as client:
+            response = client.get(
+                f"{cfg.reviewed_memory_url.rstrip('/')}/reviewed_memory_items",
+                headers=headers,
+                params={
+                    "status": "active",
+                    "include_expired": "false",
+                    "include_sources": "false",
+                    "limit": fetch_limit,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        snapshot["error"] = str(exc)
+        return snapshot
+    results = data.get("results") if isinstance(data, Mapping) else None
+    if not isinstance(results, list):
+        snapshot["error"] = "Reviewed memory response did not contain results."
+        return snapshot
+
+    ranked = _rank_typed_source_items(
+        results,
+        plan=plan,
+        fields=(
+            "title",
+            "content",
+            "domain",
+            "function",
+            "topic_key",
+            "layer_role",
+            "canonical_ref",
+        ),
+        limit=cfg.reviewed_memory_limit,
+    )
+    evaluated_at = datetime.now(timezone.utc).isoformat()
+    candidates: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
+    adapter_errors = 0
+    for rank, (score, raw_item, matches) in enumerate(ranked, start=1):
+        try:
+            candidate = reviewed_memory_candidate(
+                raw_item,
+                match_value="|".join(plan.matched_domains),
+                match_detail="matched source terms: " + ", ".join(matches),
+                retrieval_score=score,
+                rank=rank,
+                evaluated_at=evaluated_at,
+            ).to_dict()
+        except (TypeError, ValueError):
+            adapter_errors += 1
+            continue
+        candidates.append(candidate)
+        item = candidate["item"]
+        items.append(
+            {
+                "id": item["source_id"],
+                "title": item["attributes"].get("title"),
+                "topic_key": item.get("topic_key"),
+                "score": score,
+                "matched_terms": matches,
+            }
+        )
+    snapshot.update(
+        {
+            "fetch_limit": fetch_limit,
+            "items": items,
+            "candidates": candidates,
+            "result_count": len(candidates),
+            "adapter_error_count": adapter_errors,
+            "chars": sum(len(candidate["item"]["content"]) for candidate in candidates),
+        }
+    )
+    return snapshot
+
+
+def _rank_typed_source_items(
+    items: list[Any],
+    *,
+    plan: Any,
+    fields: tuple[str, ...],
+    limit: int,
+) -> list[tuple[float, Mapping[str, Any], list[str]]]:
+    terms = _dedupe_strings([*plan.matched_terms, *(plan.search_query or "").split()])
+    ranked: list[tuple[float, int, Mapping[str, Any], list[str]]] = []
+    for index, raw_item in enumerate(items):
+        if not isinstance(raw_item, Mapping):
+            continue
+        haystack = "\n".join(str(raw_item.get(field) or "") for field in fields)
+        matches = [term for term in terms if _keyword_match(haystack, term)]
+        if not matches or all(
+            term.casefold() in LOW_SIGNAL_TYPED_SOURCE_TERMS for term in matches
+        ):
+            continue
+        ranked.append((float(len(matches)), index, raw_item, matches))
+    ranked.sort(key=lambda value: (-value[0], value[1]))
+    return [
+        (score, item, matches) for score, _, item, matches in ranked[: max(0, limit)]
+    ]
+
+
 def _mother_memory_messages(
     *,
     body: Mapping[str, Any],
@@ -742,9 +1061,7 @@ def _mother_memory_messages(
     query: str,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     enabled = _body_bool(body, "mother_memory_enabled", cfg.mother_memory_enabled)
-    inject = _body_bool(
-        body, "mother_memory_inject", cfg.mother_memory_inject_enabled
-    )
+    inject = _body_bool(body, "mother_memory_inject", cfg.mother_memory_inject_enabled)
     router_enabled = _body_bool(
         body, "retrieval_router_enabled", cfg.retrieval_router_enabled
     )
@@ -889,6 +1206,60 @@ def _mother_route_reason(path: str, route_reasons: Mapping[str, str]) -> str | N
     return None
 
 
+def _rerank_kmlog_results(
+    results: list[Any],
+    *,
+    plan: Any,
+    limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    required_terms = list(plan.required_terms)
+    optional_terms = list(plan.optional_terms)
+    ranked: list[tuple[int, int, int, dict[str, Any]]] = []
+    seen_content: set[str] = set()
+    synthetic_filtered = 0
+    duplicate_filtered = 0
+    entity_filtered = 0
+    for index, raw_item in enumerate(results):
+        if not isinstance(raw_item, Mapping):
+            continue
+        item = dict(raw_item)
+        preview = str(item.get("content_preview") or "").strip()
+        if preview.startswith("The following context is provided by the system."):
+            synthetic_filtered += 1
+            continue
+        normalized = re.sub(r"\s+", " ", preview).strip().casefold()
+        if normalized and normalized in seen_content:
+            duplicate_filtered += 1
+            continue
+        if normalized:
+            seen_content.add(normalized)
+        haystack = "\n".join([preview, str(item.get("conversation_title") or "")])
+        required_matches = [
+            term for term in required_terms if _keyword_match(haystack, term)
+        ]
+        if required_terms and not required_matches:
+            entity_filtered += 1
+            continue
+        optional_matches = [
+            term for term in optional_terms if _keyword_match(haystack, term)
+        ]
+        item["planner_required_matches"] = required_matches
+        item["planner_optional_matches"] = optional_matches
+        entity_weight = max(
+            (min(20, len(term)) for term in required_matches), default=0
+        )
+        ranked.append((entity_weight, len(optional_matches), index, item))
+    ranked.sort(key=lambda value: (-value[0], -value[1], value[2]))
+    return (
+        [item for _, _, _, item in ranked[: max(0, limit)]],
+        {
+            "synthetic_filtered": synthetic_filtered,
+            "duplicate_filtered": duplicate_filtered,
+            "entity_filtered": entity_filtered,
+        },
+    )
+
+
 def _kmlog_search_messages(
     *,
     body: Mapping[str, Any],
@@ -930,9 +1301,7 @@ def _kmlog_search_messages(
         plan = plan_retrieval(query)
         snapshot["plan"] = plan.to_dict()
         if router_enabled and SOURCE_CHAT_HISTORY not in plan.sources:
-            snapshot["skipped_reason"] = (
-                "router did not select chat_history_search"
-            )
+            snapshot["skipped_reason"] = "router did not select chat_history_search"
             return [], snapshot
         if (
             query_planner_enabled
@@ -943,9 +1312,13 @@ def _kmlog_search_messages(
     snapshot["original_query"] = query
     snapshot["search_query"] = search_query
 
+    result_limit = max(1, min(cfg.kmlog_search_limit, 20))
+    fetch_limit = result_limit
+    if query_planner_enabled and plan.required_terms:
+        fetch_limit = min(20, max(result_limit, result_limit * 4))
     payload = {
         "query": search_query,
-        "limit": max(1, min(cfg.kmlog_search_limit, 20)),
+        "limit": fetch_limit,
         "mode": "auto",
         "kinds": ["chat"],
     }
@@ -983,6 +1356,14 @@ def _kmlog_search_messages(
             or not _timestamp_at_or_after(item.get("timestamp"), as_of_timestamp)
         ]
         snapshot["filtered_at_or_after_cutoff"] = original_count - len(results)
+    if query_planner_enabled:
+        snapshot["backend_result_count"] = len(results)
+        results, planner_filter_stats = _rerank_kmlog_results(
+            results,
+            plan=plan,
+            limit=result_limit,
+        )
+        snapshot["planner_filter_stats"] = planner_filter_stats
 
     remaining_chars = max(0, cfg.kmlog_search_chars_total)
     items: list[dict[str, Any]] = []
@@ -1020,6 +1401,12 @@ def _kmlog_search_messages(
                 "match_type": raw_item.get("match_type"),
                 "relevance": raw_item.get("relevance"),
                 "token_hits": raw_item.get("token_hits"),
+                "planner_required_matches": raw_item.get(
+                    "planner_required_matches", []
+                ),
+                "planner_optional_matches": raw_item.get(
+                    "planner_optional_matches", []
+                ),
                 "chars": len(clipped),
                 "content_preview": clipped,
             }
@@ -1057,7 +1444,9 @@ def _timestamp_at_or_after(value: Any, cutoff: str) -> bool:
     if not timestamp:
         return False
     try:
-        normalized_value = timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
+        normalized_value = (
+            timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
+        )
         normalized_cutoff = cutoff[:-1] + "+00:00" if cutoff.endswith("Z") else cutoff
         return datetime.fromisoformat(normalized_value) >= datetime.fromisoformat(
             normalized_cutoff
@@ -1177,7 +1566,9 @@ def _worldbook_messages(
                 "source": entry.get("_source_path"),
                 "priority": entry.get("priority"),
                 "keyword": match.get("keyword"),
-                "used_compact_summary": bool(str(entry.get("compact_summary") or "").strip()),
+                "used_compact_summary": bool(
+                    str(entry.get("compact_summary") or "").strip()
+                ),
                 "chars": len(clipped),
             }
         )
@@ -1290,7 +1681,9 @@ def _trigger_input(
         and str(message.get("role") or "").strip() == "user"
         and str(message.get("content") or "").strip()
     ]
-    current = (current_user_text or "").strip() or (user_messages[-1] if user_messages else "")
+    current = (current_user_text or "").strip() or (
+        user_messages[-1] if user_messages else ""
+    )
     recent_users = user_messages[:-1] if current and user_messages else user_messages
     if current:
         parts.append(current)
@@ -1477,7 +1870,9 @@ def _body_bool(body: Mapping[str, Any], key: str, default: bool) -> bool:
 
 
 @lru_cache(maxsize=8)
-def _load_worldbook_entries(path: Path) -> tuple[tuple[dict[str, Any], ...], str | None]:
+def _load_worldbook_entries(
+    path: Path,
+) -> tuple[tuple[dict[str, Any], ...], str | None]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:

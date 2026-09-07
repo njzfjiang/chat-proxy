@@ -267,8 +267,9 @@ async def test_proxy_streams_and_persists_assistant_text(tmp_path, upstream_app,
     assert resp.status_code == 200
     assert "data:" in resp.text
     assert resp.text.count("data: [DONE]") == 1
-    assert resp.headers["cache-control"] == "no-cache"
+    assert resp.headers["cache-control"] == "no-cache, no-transform"
     assert resp.headers["x-accel-buffering"] == "no"
+    assert resp.headers["x-chat-proxy-stream-policy"] == "done-short-circuit-v1"
 
     conn = sqlite3.connect(db_path)
     assistant = conn.execute(
@@ -284,6 +285,86 @@ async def test_proxy_streams_and_persists_assistant_text(tmp_path, upstream_app,
     response_json = json.loads(request_row[1])
     assert response_json["sse_done_received"] is True
     assert response_json["synthetic_done_emitted"] is False
+    assert response_json["stream_terminal_reason"] == "upstream_done"
+    assert response_json["upstream_chunk_count"] >= 1
+    assert response_json["upstream_byte_count"] > 0
+    assert response_json["stream_duration_ms"] >= 0
+
+
+@pytest.mark.anyio
+async def test_proxy_stops_reading_after_done_without_waiting_for_upstream_close(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    stream_closed = asyncio.Event()
+
+    class DoneThenStallStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"complete"}}]}\n\n'
+            # Exercise the provider edge case where [DONE] has no newline and
+            # the HTTP connection remains open indefinitely.
+            yield b"data: [DONE]"
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            stream_closed.set()
+
+    class FakeUpstreamClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def build_request(self, method, url, **kwargs):
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, request, stream=False):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=DoneThenStallStream(),
+                request=request,
+            )
+
+        async def aclose(self):
+            pass
+
+    original_async_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", FakeUpstreamClient)
+    app = create_app(ProxyConfig(upstream_base="http://upstream", db_path=db_path))
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await asyncio.wait_for(
+            client.post(
+                "/chat/completions",
+                headers={"X-Kelivo-Conversation-Id": "chat-done-stall"},
+                json={
+                    "model": "gpt-test",
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            ),
+            timeout=1,
+        )
+
+    assert resp.status_code == 200
+    assert resp.text.endswith("data: [DONE]")
+    assert stream_closed.is_set()
+
+    conn = sqlite3.connect(db_path)
+    status, response_json_raw = conn.execute(
+        "SELECT status, response_json FROM requests"
+    ).fetchone()
+    conn.close()
+
+    response_json = json.loads(response_json_raw)
+    assert status == "completed"
+    assert response_json["sse_done_received"] is True
+    assert response_json["synthetic_done_emitted"] is False
+    assert response_json["stream_terminal_reason"] == "upstream_done"
+    assert response_json["upstream_chunk_count"] == 2
 
 
 @pytest.mark.anyio
@@ -1391,6 +1472,166 @@ async def test_build_context_previews_messages_without_calling_upstream(tmp_path
     conn.close()
     assert request_count == 0
     assert message_count == 1
+
+
+@pytest.mark.anyio
+async def test_build_context_selects_typed_j_and_reviewed_candidates_without_injection(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    calls = []
+
+    class SourceResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class SourceClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url, headers=None, params=None):
+            calls.append({"url": url, "headers": headers, "params": params})
+            if url.endswith("/j/source"):
+                return SourceResponse(
+                    {
+                        "source_file": "Recent Goals(Current).md",
+                        "revision": "j-revision",
+                        "updated_at": "2026-09-01T12:00:00Z",
+                        "active_items": [
+                            {
+                                "id": "J-CSC2555",
+                                "title": "CSC2555 project",
+                                "body": "Finish the project evaluation table.",
+                                "area": "course",
+                                "status": "active",
+                                "created_at": "2026-08-20",
+                                "review_on": "2026-09-10",
+                            }
+                        ],
+                    }
+                )
+            assert url.endswith("/reviewed_memory_items")
+            return SourceResponse(
+                {
+                    "results": [
+                        {
+                            "id": 42,
+                            "title": "CSC2555 milestone",
+                            "content": "The project report draft is complete.",
+                            "domain": "course",
+                            "topic_key": "course.csc2555",
+                            "status": "active",
+                            "source_candidate_ids_json": "[]",
+                            "source_message_ids_json": "[101]",
+                            "reviewed_at": "2026-08-31T00:00:00Z",
+                            "updated_at": "2026-08-31T00:00:00Z",
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", SourceClient)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            retrieval_router_enabled=True,
+            recent_goals_enabled=True,
+            recent_goals_url="http://kmlog",
+            recent_goals_api_key="source-key",
+            reviewed_memory_enabled=True,
+            reviewed_memory_url="http://kmlog",
+            reviewed_memory_api_key="source-key",
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://proxy"
+    ) as client:
+        response = await client.post(
+            "/build_context",
+            json={
+                "conversation_id": "course-chat",
+                "user_text": "CSC2555 project 现在做到哪一步了",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["messages"] == [
+        {"role": "user", "content": "CSC2555 project 现在做到哪一步了"}
+    ]
+    packet = payload["context_packet"]
+    assert [candidate["item"]["source_type"] for candidate in packet["retrieval_candidates"]] == [
+        "recent_goals",
+        "reviewed_memory",
+    ]
+    assert all(
+        candidate["injectable"]["allowed"] is False
+        for candidate in packet["retrieval_candidates"]
+    )
+    assert calls[0]["headers"]["x-api-key"] == "source-key"
+    assert calls[1]["params"]["status"] == "active"
+
+
+@pytest.mark.anyio
+async def test_build_context_router_skips_j_and_reviewed_for_social_turn(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+
+    class UnexpectedSourceClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("social routing should not fetch J or reviewed memory")
+
+    monkeypatch.setattr(
+        "chat_proxy.context_builder.httpx.Client", UnexpectedSourceClient
+    )
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            retrieval_router_enabled=True,
+            recent_goals_enabled=True,
+            recent_goals_url="http://kmlog",
+            reviewed_memory_enabled=True,
+            reviewed_memory_url="http://kmlog",
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://proxy"
+    ) as client:
+        response = await client.post(
+            "/build_context",
+            json={"conversation_id": "social-chat", "user_text": "晚安，抱抱"},
+        )
+
+    assert response.status_code == 200
+    components = {
+        component["name"]: component
+        for component in response.json()["context_packet"]["components"]
+    }
+    assert components["recent_goals"]["skipped_reason"] == (
+        "router did not select recent_goals"
+    )
+    assert components["reviewed_memory"]["skipped_reason"] == (
+        "router did not select reviewed_memory"
+    )
 
 
 @pytest.mark.anyio

@@ -4,8 +4,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-
 SOURCE_RECENT = "recent"
+SOURCE_RECENT_GOALS = "recent_goals"
+SOURCE_REVIEWED_MEMORY = "reviewed_memory"
 SOURCE_CHAT_HISTORY = "chat_history_search"
 SOURCE_CORE_ANCHORS = "core_anchors"
 SOURCE_MOTHER_MEMORY = "mother_memory"
@@ -20,8 +21,7 @@ _TIMESTAMP_RE = re.compile(
 _LATIN_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]{1,}")
 _QUOTED_RE = re.compile(r"[`“\"]([^`”\"]{2,48})[`”\"]")
 _RECOLLECTION_PHRASE_RE = re.compile(
-    r"(?:之前|以前|当时|那时候|记得|回忆起?|上次|曾经)"
-    r"([^，。！？,!?\n]{2,24})"
+    r"(?:之前|以前|当时|那时候|记得|回忆起?|上次|曾经)" r"([^，。！？,!?\n]{2,24})"
 )
 
 _MEMORY_TERMS = (
@@ -102,14 +102,59 @@ _COURSE_TERMS = (
     "考试",
     "队友",
 )
+_COURSE_ENTITY_TERMS = (
+    "algorithmic fairness",
+    "fairness",
+    "genai",
+    "day-to-night",
+    "day2night",
+    "cyclegan",
+    "pix2pix",
+    "sd-turbo",
+    "darkdriving",
+    "convex",
+    "ista",
+    "fista",
+    "admm",
+    "kubernetes",
+    "digital ocean",
+    "cloud",
+    "security",
+    "reinforcement learning",
+    "rl",
+)
+_COURSE_SUPPORT_TERMS = (
+    "project",
+    "assignment",
+    "homework",
+    "presentation",
+    "report",
+    "paper",
+    "slides",
+    "dataset",
+    "exam",
+    "training",
+    "evaluation",
+    "experiment",
+    "prototype",
+    "prototyping",
+    "作业",
+    "论文",
+    "演讲",
+    "复习",
+    "考试",
+)
+_QUERY_TERM_EXPANSIONS = {
+    "作业": ("assignment", "homework"),
+    "演讲": ("presentation",),
+    "prototyping": ("prototype",),
+}
 _META_TERMS = (
     "identity",
     "consciousness",
     "agency",
     "ethics",
     "self-concept",
-    "ai",
-    "模型",
     "自我",
     "自我意识",
     "自我认同",
@@ -168,6 +213,12 @@ _LATIN_STOPWORDS = {
     "more",
     "not",
     "now",
+    "do",
+    "done",
+    "on",
+    "plus",
+    "bushi",
+    "project",
     "some",
     "that",
     "the",
@@ -190,6 +241,14 @@ _LATIN_STOPWORDS = {
     "kai",
     "mei",
     "老公",
+    "dhl",
+    "husband",
+    "wife",
+    "teammate",
+    "team",
+    "猫猫",
+    "小猫",
+    "狐狸",
 }
 
 
@@ -199,6 +258,8 @@ class RetrievalPlan:
     search_query: str | None
     matched_domains: tuple[str, ...]
     matched_terms: tuple[str, ...]
+    required_terms: tuple[str, ...]
+    optional_terms: tuple[str, ...]
     reasons: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -207,6 +268,8 @@ class RetrievalPlan:
             "search_query": self.search_query,
             "matched_domains": list(self.matched_domains),
             "matched_terms": list(self.matched_terms),
+            "required_terms": list(self.required_terms),
+            "optional_terms": list(self.optional_terms),
             "reasons": list(self.reasons),
         }
 
@@ -216,12 +279,14 @@ def plan_retrieval(text: str) -> RetrievalPlan:
     lowered = cleaned.lower()
     domains: list[str] = []
     terms: list[str] = []
+    required_terms: list[str] = []
+    optional_terms: list[str] = []
     sources: list[str] = [SOURCE_RECENT]
     reasons: list[str] = []
 
     memory_hits = _matched_terms(lowered, _MEMORY_TERMS)
     health_hits = _matched_terms(lowered, _HEALTH_TERMS)
-    course_hits = _matched_terms(lowered, _COURSE_TERMS)
+    course_hits = _matched_terms(lowered, (*_COURSE_TERMS, *_COURSE_ENTITY_TERMS))
     meta_hits = _matched_terms(lowered, _META_TERMS)
     recollection_hits = _matched_terms(lowered, _RECOLLECTION_TERMS)
     quote_hits = _matched_terms(lowered, _QUOTE_TERMS)
@@ -231,6 +296,8 @@ def plan_retrieval(text: str) -> RetrievalPlan:
         terms.extend(memory_hits)
         sources.extend(
             [
+                SOURCE_RECENT_GOALS,
+                SOURCE_REVIEWED_MEMORY,
                 SOURCE_CHAT_HISTORY,
                 SOURCE_MOTHER_MEMORY,
                 SOURCE_CORE_ANCHORS,
@@ -245,13 +312,28 @@ def plan_retrieval(text: str) -> RetrievalPlan:
         reasons.append("health state may depend on recent and historical care context")
     if course_hits:
         domains.append("course_project")
-        terms.extend(course_hits)
-        sources.append(SOURCE_CHAT_HISTORY)
-        reasons.append("course/project state is primarily episodic chat history")
-    if recollection_hits:
+        course_entities = _matched_terms(lowered, _COURSE_ENTITY_TERMS)
+        course_support = _matched_terms(lowered, _COURSE_SUPPORT_TERMS)
+        required_terms.extend(course_entities)
+        optional_terms.extend(course_support)
+        for support_term in course_support:
+            optional_terms.extend(_QUERY_TERM_EXPANSIONS.get(support_term.lower(), ()))
+        terms.extend(course_entities)
+        terms.extend(course_support)
+        sources.extend(
+            [SOURCE_RECENT_GOALS, SOURCE_REVIEWED_MEMORY, SOURCE_CHAT_HISTORY]
+        )
+        reasons.append(
+            "course/project state prefers recent goals, then reviewed memory, "
+            "with chat history as episodic fallback"
+        )
+    if recollection_hits and (not quote_hits or _explicit_quote_recall(cleaned)):
         domains.append("recollection")
         terms.extend(recollection_hits)
-        terms.extend(match.group(1).strip() for match in _RECOLLECTION_PHRASE_RE.finditer(cleaned))
+        terms.extend(
+            match.group(1).strip()
+            for match in _RECOLLECTION_PHRASE_RE.finditer(cleaned)
+        )
         sources.append(SOURCE_CHAT_HISTORY)
         reasons.append("explicit recollection cue requests older conversation context")
     if meta_hits:
@@ -272,8 +354,15 @@ def plan_retrieval(text: str) -> RetrievalPlan:
 
     if SOURCE_CHAT_HISTORY in sources:
         terms.extend(_quoted_terms(cleaned))
-        terms.extend(_latin_terms(cleaned))
+        optional_terms.extend(_latin_terms(cleaned))
+        terms.extend(optional_terms)
     deduped_terms = _dedupe(terms)
+    deduped_required_terms = _dedupe(required_terms)
+    deduped_optional_terms = [
+        term
+        for term in _dedupe(optional_terms)
+        if term.lower() not in {value.lower() for value in deduped_required_terms}
+    ]
     search_query = " ".join(deduped_terms[:10]).strip() or None
     if SOURCE_CHAT_HISTORY in sources and not search_query:
         search_query = cleaned[:180].strip() or None
@@ -283,6 +372,8 @@ def plan_retrieval(text: str) -> RetrievalPlan:
         search_query=search_query,
         matched_domains=tuple(_dedupe(domains)),
         matched_terms=tuple(deduped_terms),
+        required_terms=tuple(deduped_required_terms),
+        optional_terms=tuple(deduped_optional_terms),
         reasons=tuple(reasons),
     )
 
@@ -300,9 +391,7 @@ def _matched_terms(lowered_text: str, candidates: tuple[str, ...]) -> list[str]:
     for term in candidates:
         lowered_term = term.lower()
         if re.fullmatch(r"[a-z0-9_+ .-]+", lowered_term):
-            pattern = (
-                rf"(?<![a-z0-9_]){re.escape(lowered_term)}(?![a-z0-9_])"
-            )
+            pattern = rf"(?<![a-z0-9_]){re.escape(lowered_term)}(?![a-z0-9_])"
             matched = re.search(pattern, lowered_text) is not None
         else:
             matched = lowered_term in lowered_text
@@ -313,6 +402,17 @@ def _matched_terms(lowered_text: str, candidates: tuple[str, ...]) -> list[str]:
 
 def _quoted_terms(text: str) -> list[str]:
     return [match.group(1).strip() for match in _QUOTED_RE.finditer(text)]
+
+
+def _explicit_quote_recall(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:还记得|记不记得|你记得|帮我找|找一下|搜一下).{0,24}"
+            r"(?:歌词|哪首歌|歌|quote|lyrics)|(?:哪首歌|哪句歌词)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _latin_terms(text: str) -> list[str]:

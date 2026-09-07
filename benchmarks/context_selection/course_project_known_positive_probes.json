@@ -1,0 +1,41 @@
+{
+  "probes": [
+    {
+      "seed_message_id": "40163",
+      "label": "fairness project history",
+      "all_of": [
+        ["fairness project", "Algorithmic Fairness"],
+        ["medical", "deployment shift", "phase diagram", "project folder"]
+      ],
+      "expected_corpus": "present"
+    },
+    {
+      "seed_message_id": "41055",
+      "label": "fairness project deliverables",
+      "all_of": [
+        ["fairness project", "Algorithmic Fairness"],
+        ["presentation", "report", "code", "proposal"]
+      ],
+      "expected_corpus": "present"
+    },
+    {
+      "seed_message_id": "41411",
+      "label": "day-to-night CycleGAN history",
+      "all_of": [
+        ["day-to-night", "day2night", "昼夜转换"],
+        ["CycleGAN", "Pix2Pix", "SD-Turbo"]
+      ],
+      "expected_corpus": "present"
+    },
+    {
+      "seed_message_id": "42405",
+      "label": "CycleGAN and Pix2Pix runs",
+      "all_of": [
+        ["CycleGAN"],
+        ["Pix2Pix"],
+        ["step", "iteration", "run", "shot"]
+      ],
+      "expected_corpus": "present"
+    }
+  ]
+}

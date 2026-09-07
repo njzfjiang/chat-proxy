@@ -58,6 +58,15 @@ for another, without mutating canonical memory.
 These roles are not globally comparable relevance scores. Routing and
 precedence policies should compare candidates within the requested fact class.
 
+The deterministic source topology currently uses these precedence paths:
+
+- course/project state: recent turns -> J -> reviewed memory -> chat evidence;
+- memory infrastructure: recent turns -> J/reviewed memory plus Mother/Core/WB,
+  with chat history retained as episodic evidence;
+- stable identity/protocol questions: Mother/Core/WB before chat evidence.
+
+The order is epistemic precedence, not a shared similarity-score ordering.
+
 ### Rolling summary representation
 
 A rolling summary is a fallible derived cache, not validated memory. Represent
@@ -84,6 +93,7 @@ it permanently injectable. `InjectionDecision.signals` must record independent
 signals such as `relationship_context` and `explicit_intimacy_cue`; policy may
 allow injection only when the explicit cue is true.
 
-The implementation is in `chat_proxy/retrieval_contracts.py`. Adapters should
-construct these objects at their boundary; this initial contract does not alter
-current context-selection behavior.
+The implementation is in `chat_proxy/retrieval_contracts.py`. Adapters construct
+these objects at their boundary. J and reviewed memory currently emit typed,
+selection-only candidates; other sources remain on legacy component metadata
+until migrated explicitly.

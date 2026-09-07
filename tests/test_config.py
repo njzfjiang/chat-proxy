@@ -20,6 +20,10 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
                 "CHAT_PROXY_RETRIEVAL_INJECT_ENABLED=false",
                 "CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED=true",
                 "CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED=false",
+                "CHAT_PROXY_RECENT_GOALS_ENABLED=true",
+                "CHAT_PROXY_RECENT_GOALS_LIMIT=3",
+                "CHAT_PROXY_REVIEWED_MEMORY_ENABLED=true",
+                "CHAT_PROXY_REVIEWED_MEMORY_LIMIT=6",
                 "CHAT_PROXY_MOTHER_MEMORY_ENABLED=true",
                 "CHAT_PROXY_MOTHER_MEMORY_INJECT_ENABLED=false",
                 "CHAT_PROXY_MOTHER_MEMORY_LIMIT=3",
@@ -31,7 +35,7 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
                 "CHAT_PROXY_KMLOG_SEARCH_TIMEOUT_SECONDS=2.5",
                 "CHAT_PROXY_SUMMARY_ENABLED=true",
                 "CHAT_PROXY_SUMMARY_MODEL='deepseek-v4-flash'",
-                "CHAT_PROXY_SUMMARY_API_KEY=\"abc#123\"",
+                'CHAT_PROXY_SUMMARY_API_KEY="abc#123"',
                 "CHAT_PROXY_DAILY_SUMMARY_ENABLED=true",
                 "CHAT_PROXY_DAILY_SUMMARY_RECENT_K=125",
                 "CHAT_PROXY_PORT=9999 # inline comment",
@@ -54,9 +58,11 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_INJECT_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED", raising=False)
-    monkeypatch.delenv(
-        "CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED", raising=False
-    )
+    monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_RECENT_GOALS_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_RECENT_GOALS_LIMIT", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_REVIEWED_MEMORY_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_REVIEWED_MEMORY_LIMIT", raising=False)
     monkeypatch.delenv("CHAT_PROXY_MOTHER_MEMORY_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_MOTHER_MEMORY_INJECT_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_MOTHER_MEMORY_LIMIT", raising=False)
@@ -93,6 +99,14 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     assert cfg.retrieval_inject_enabled is False
     assert cfg.retrieval_router_enabled is True
     assert cfg.retrieval_query_planner_enabled is False
+    assert cfg.recent_goals_enabled is True
+    assert cfg.recent_goals_url == "http://127.0.0.1:8013"
+    assert cfg.recent_goals_api_key == "search-key"
+    assert cfg.recent_goals_limit == 3
+    assert cfg.reviewed_memory_enabled is True
+    assert cfg.reviewed_memory_url == "http://127.0.0.1:8013"
+    assert cfg.reviewed_memory_api_key == "search-key"
+    assert cfg.reviewed_memory_limit == 6
     assert cfg.mother_memory_enabled is True
     assert cfg.mother_memory_inject_enabled is False
     assert cfg.mother_memory_url == "http://127.0.0.1:8013"

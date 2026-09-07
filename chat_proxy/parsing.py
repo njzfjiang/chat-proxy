@@ -472,6 +472,14 @@ class SseTextAccumulator:
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
             self._consume_line(line.rstrip("\r"))
+        # Some compatible providers send the terminal sentinel without a
+        # trailing newline and keep the HTTP connection alive. It is safe to
+        # consume the exact sentinel immediately because no valid SSE payload
+        # can extend it.
+        pending = self._buffer.rstrip("\r")
+        if pending.startswith("data:") and pending[5:].strip() == "[DONE]":
+            self._buffer = ""
+            self._consume_line(pending)
 
     def finish(self) -> None:
         """Consume a final unterminated SSE line after the upstream closes."""

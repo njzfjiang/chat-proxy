@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,6 +37,11 @@ from .storage import ChatProxyStore
 from .daily_summary import date_key_for, update_daily_summary
 from .summary import inject_rolling_summary, update_conversation_summary
 from .tool_registry import resolve_tools_policy
+
+
+# Use Uvicorn's configured error-log hierarchy so INFO lifecycle records reach
+# systemd/journald in the normal production launch configuration.
+stream_logger = logging.getLogger("uvicorn.error.chat_proxy.stream")
 
 
 HOP_BY_HOP_HEADERS = {
@@ -753,6 +760,9 @@ async def _stream_upstream(
     accumulator = SseTextAccumulator()
     raw_chunks: list[str] = []
     synthetic_done_emitted = False
+    stream_started_at = time.monotonic()
+    upstream_chunk_count = 0
+    upstream_byte_count = 0
 
     try:
         upstream = await client.send(
@@ -772,43 +782,82 @@ async def _stream_upstream(
 
     async def body_iter():
         nonlocal synthetic_done_emitted
+        nonlocal upstream_chunk_count, upstream_byte_count
         status = "completed"
         error_text = None
+        terminal_reason = "upstream_eof"
+        stream_logger.info(
+            "stream_open request_id=%s conversation_id=%s upstream_status=%s",
+            request_id,
+            conversation_id,
+            upstream.status_code,
+        )
         try:
             try:
-                async for chunk in upstream.aiter_bytes():
-                    if chunk:
+                try:
+                    async for chunk in upstream.aiter_bytes():
+                        if not chunk:
+                            continue
+                        upstream_chunk_count += 1
+                        upstream_byte_count += len(chunk)
                         accumulator.add_bytes(chunk)
                         raw_chunks.append(chunk.decode("utf-8", errors="replace"))
                         yield chunk
+                        # [DONE] is the protocol terminator. Do not wait for a
+                        # buggy or long-lived upstream connection to close after
+                        # the terminal event has already been forwarded.
+                        if accumulator.done_received:
+                            terminal_reason = "upstream_done"
+                            break
+                except httpx.RemoteProtocolError as exc:
+                    status = "upstream_incomplete" if raw_chunks else "error"
+                    terminal_reason = "upstream_incomplete"
+                    error_text = str(exc)
+                    if not raw_chunks:
+                        raise
                 if upstream.status_code >= 400:
                     status = "error"
+                    terminal_reason = "upstream_http_error"
                     error_text = "".join(raw_chunks)
+
+                accumulator.finish()
+                if (
+                    upstream.status_code < 400
+                    and accumulator.saw_data
+                    and not accumulator.done_received
+                ):
+                    synthetic_done_emitted = True
+                    terminal_reason = "synthetic_done_after_upstream_end"
+                    yield b"data: [DONE]\n\n"
             except (asyncio.CancelledError, GeneratorExit):
                 status = "cancelled"
+                terminal_reason = "client_disconnected"
                 error_text = "client disconnected while streaming"
                 raise
-            except httpx.RemoteProtocolError as exc:
-                status = "upstream_incomplete" if raw_chunks else "error"
-                error_text = str(exc)
-                if not raw_chunks:
-                    raise
             except Exception as exc:
                 status = "error"
+                terminal_reason = "stream_error"
                 error_text = str(exc)
                 raise
-
-            accumulator.finish()
-            if (
-                upstream.status_code < 400
-                and accumulator.saw_data
-                and not accumulator.done_received
-            ):
-                synthetic_done_emitted = True
-                yield b"data: [DONE]\n\n"
         finally:
             await upstream.aclose()
             await client.aclose()
+            duration_ms = round((time.monotonic() - stream_started_at) * 1000)
+            stream_logger.info(
+                "stream_terminal request_id=%s status=%s terminal_reason=%s "
+                "upstream_status=%s sse_done_received=%s sse_finish_reason=%s "
+                "synthetic_done_emitted=%s chunks=%s bytes=%s duration_ms=%s",
+                request_id,
+                status,
+                terminal_reason,
+                upstream.status_code,
+                accumulator.done_received,
+                accumulator.finish_reason,
+                synthetic_done_emitted,
+                upstream_chunk_count,
+                upstream_byte_count,
+                duration_ms,
+            )
             store.complete_request(
                 request_id=request_id,
                 now=_now(),
@@ -820,6 +869,10 @@ async def _stream_upstream(
                     "sse_done_received": accumulator.done_received,
                     "sse_finish_reason": accumulator.finish_reason,
                     "synthetic_done_emitted": synthetic_done_emitted,
+                    "stream_terminal_reason": terminal_reason,
+                    "upstream_chunk_count": upstream_chunk_count,
+                    "upstream_byte_count": upstream_byte_count,
+                    "stream_duration_ms": duration_ms,
                 },
                 error_text=error_text,
             )
@@ -848,8 +901,12 @@ async def _stream_upstream(
                 )
 
     response_headers = _response_headers(upstream.headers)
-    response_headers.setdefault("cache-control", "no-cache")
+    cache_control = response_headers.get("cache-control", "no-cache")
+    if "no-transform" not in cache_control.lower():
+        cache_control = f"{cache_control}, no-transform"
+    response_headers["cache-control"] = cache_control
     response_headers.setdefault("x-accel-buffering", "no")
+    response_headers["x-chat-proxy-stream-policy"] = "done-short-circuit-v1"
     return StreamingResponse(
         body_iter(),
         status_code=upstream.status_code,
@@ -1026,6 +1083,10 @@ def _context_builder_config(
         updates["core_anchors_enabled"] = False
     if not _include_enabled(include, "mother_memory", True):
         updates["mother_memory_enabled"] = False
+    if not _include_enabled(include, "recent_goals", True):
+        updates["recent_goals_enabled"] = False
+    if not _include_enabled(include, "reviewed_memory", True):
+        updates["reviewed_memory_enabled"] = False
     return replace(cfg, **updates) if updates else cfg
 
 

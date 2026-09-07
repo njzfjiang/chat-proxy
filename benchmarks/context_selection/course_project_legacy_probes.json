@@ -1,0 +1,49 @@
+{
+  "probes": [
+    {
+      "seed_message_id": "985",
+      "label": "Algorithmic Fairness assignment state",
+      "all_of": [
+        ["Algorithmic Fairness", "fairness"],
+        ["homework", "assignment", "作业"]
+      ],
+      "expected_corpus": "unknown"
+    },
+    {
+      "seed_message_id": "985",
+      "label": "GenAI assignment state",
+      "all_of": [
+        ["GenAI", "generative AI"],
+        ["homework", "assignment", "作业"]
+      ],
+      "expected_corpus": "unknown"
+    },
+    {
+      "seed_message_id": "9123",
+      "label": "cloud monitoring or backup",
+      "all_of": [
+        ["cloud", "Digital Ocean", "Kubernetes"],
+        ["monitoring", "DB backup", "database backup"]
+      ],
+      "expected_corpus": "unknown"
+    },
+    {
+      "seed_message_id": "9517",
+      "label": "convex solver experiment",
+      "all_of": [
+        ["convex"],
+        ["ISTA", "FISTA", "ADMM"]
+      ],
+      "expected_corpus": "unknown"
+    },
+    {
+      "seed_message_id": "11388",
+      "label": "prototype and presentation requirements",
+      "all_of": [
+        ["prototype", "prototyping"],
+        ["presentation", "演讲"]
+      ],
+      "expected_corpus": "unknown"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import asyncio
 import csv
 import gc
 import json
+import re
 import sqlite3
 import tempfile
 from collections import defaultdict
@@ -18,6 +19,14 @@ from httpx import ASGITransport
 
 from .app import create_app
 from .config import load_config
+
+_CURATED_COUNT_KEYS = (
+    "recent_goals_result_count",
+    "reviewed_memory_result_count",
+    "mother_result_count",
+    "core_result_count",
+    "worldbook_result_count",
+)
 
 
 def _clone_database_read_only(source_path: Path, destination_path: Path) -> None:
@@ -38,6 +47,7 @@ def _load_seed_rows(seed_path: Path, db_path: Path) -> list[dict[str, str]]:
     resolved = db_path.expanduser().resolve()
     uri = f"file:{quote(resolved.as_posix(), safe='/:')}?mode=ro&immutable=1"
     placeholders = ",".join("?" for _ in message_ids)
+    hydrated = []
     with sqlite3.connect(uri, uri=True) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -48,23 +58,85 @@ WHERE id IN ({placeholders})
 """,
             message_ids,
         ).fetchall()
-    by_id = {int(row["id"]): dict(row) for row in rows}
-    missing = sorted(set(message_ids) - set(by_id))
-    if missing:
-        raise ValueError(f"Seed message IDs are missing from the DB: {missing}")
-
-    hydrated = []
-    for seed in seeds:
-        source = by_id[int(seed["message_id"])]
-        hydrated.append(
-            {
-                **seed,
-                "timestamp": str(source.get("timestamp") or seed.get("timestamp") or ""),
-                "conversation_id": str(source.get("conversation_id") or ""),
-                "text": str(source.get("content") or seed.get("text") or ""),
-            }
-        )
+        by_id = {int(row["id"]): dict(row) for row in rows}
+        for seed in seeds:
+            original_id = int(seed["message_id"])
+            seed_text = str(seed.get("text") or "")
+            source = by_id.get(original_id)
+            rematched = False
+            if source is None or str(source.get("content") or "") != seed_text:
+                source = _match_seed_by_content(conn, seed)
+                rematched = True
+            hydrated.append(
+                {
+                    **seed,
+                    "seed_message_id": str(original_id),
+                    "message_id": str(source["id"]),
+                    "message_id_rematched": str(rematched).lower(),
+                    "timestamp": str(
+                        source.get("timestamp") or seed.get("timestamp") or ""
+                    ),
+                    "conversation_id": str(source.get("conversation_id") or ""),
+                    "text": str(source.get("content") or seed_text),
+                }
+            )
     return hydrated
+
+
+def _match_seed_by_content(
+    conn: sqlite3.Connection,
+    seed: dict[str, str],
+) -> dict[str, Any]:
+    seed_text = str(seed.get("text") or "")
+    if not seed_text:
+        raise ValueError(f"Seed {seed.get('message_id')} has no text for rematching.")
+    rows = conn.execute(
+        """
+SELECT id, timestamp, content, conversation_id
+FROM messages
+WHERE role = 'user' AND content = ?
+ORDER BY id
+""",
+        (seed_text,),
+    ).fetchall()
+    matches = [dict(row) for row in rows]
+    seed_timestamp = str(seed.get("timestamp") or "").strip()
+    exact_timestamp_matches = [
+        row for row in matches if str(row.get("timestamp") or "") == seed_timestamp
+    ]
+    if len(exact_timestamp_matches) == 1:
+        return exact_timestamp_matches[0]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches and seed_timestamp:
+        timestamp_rows = conn.execute(
+            """
+SELECT id, timestamp, content, conversation_id
+FROM messages
+WHERE role = 'user' AND timestamp = ?
+ORDER BY id
+""",
+            (seed_timestamp,),
+        ).fetchall()
+        normalized_matches = [
+            dict(row)
+            for row in timestamp_rows
+            if _normalize_seed_text(row["content"]) == _normalize_seed_text(seed_text)
+        ]
+        if len(normalized_matches) == 1:
+            return normalized_matches[0]
+    if not matches:
+        raise ValueError(
+            f"Seed message {seed.get('message_id')} was not found by ID or exact text."
+        )
+    raise ValueError(
+        f"Seed message {seed.get('message_id')} matched {len(matches)} rows by exact "
+        "text and could not be disambiguated by timestamp."
+    )
+
+
+def _normalize_seed_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def _component(packet: dict[str, Any], name: str) -> dict[str, Any]:
@@ -76,7 +148,9 @@ def _component(packet: dict[str, Any], name: str) -> dict[str, Any]:
 
 def _recent_ids(debug: dict[str, Any]) -> list[int]:
     values = (debug.get("source_ids") or {}).get("recent_turns") or []
-    return [int(value.split(":", 1)[1]) for value in values if value.startswith("message:")]
+    return [
+        int(value.split(":", 1)[1]) for value in values if value.startswith("message:")
+    ]
 
 
 def _is_true(value: Any) -> bool:
@@ -105,6 +179,8 @@ async def _run_benchmark(
             core_anchors_enabled=curated_sources,
             mother_memory_enabled=curated_sources,
             mother_memory_inject_enabled=False,
+            recent_goals_enabled=curated_sources,
+            reviewed_memory_enabled=curated_sources,
             summary_enabled=False,
             retrieval_enabled=retrieval_enabled,
             retrieval_inject_enabled=False,
@@ -138,6 +214,8 @@ async def _run_benchmark(
                             "worldbook": curated_sources,
                             "core_anchors": curated_sources,
                             "mother_memory": curated_sources,
+                            "recent_goals": curated_sources,
+                            "reviewed_memory": curated_sources,
                             "rolling_summary": False,
                         },
                     },
@@ -157,8 +235,21 @@ async def _run_benchmark(
                 recent = _component(packet, "recent_turns")
                 retrieval = _component(packet, "kmlog_search")
                 mother = _component(packet, "mother_memory")
+                recent_goals = _component(packet, "recent_goals")
+                reviewed_memory = _component(packet, "reviewed_memory")
                 core = _component(packet, "core_anchors")
                 worldbook = _component(packet, "wb_snippets")
+                source_errors = {
+                    name: str(component.get("error"))
+                    for name, component in (
+                        ("recent_goals", recent_goals),
+                        ("reviewed_memory", reviewed_memory),
+                        ("mother_memory", mother),
+                        ("core_anchors", core),
+                        ("worldbook", worldbook),
+                    )
+                    if component.get("error")
+                }
                 recent_ids = _recent_ids(debug)
                 retrieval_items = retrieval.get("items") or []
                 plan = retrieval.get("plan") or {}
@@ -181,7 +272,9 @@ async def _run_benchmark(
                         "expected_no_context": expected == {"none"},
                         "recent_turn_count": int(recent.get("message_count") or 0),
                         "recent_source_ids": "|".join(map(str, recent_ids)),
-                        "retrieval_result_count": int(retrieval.get("result_count") or 0),
+                        "retrieval_result_count": int(
+                            retrieval.get("result_count") or 0
+                        ),
                         "retrieval_source_ids": "|".join(
                             str(item.get("id")) for item in retrieval_items
                         ),
@@ -192,6 +285,12 @@ async def _run_benchmark(
                                     "timestamp": item.get("timestamp"),
                                     "relevance": item.get("relevance"),
                                     "token_hits": item.get("token_hits"),
+                                    "planner_required_matches": item.get(
+                                        "planner_required_matches", []
+                                    ),
+                                    "planner_optional_matches": item.get(
+                                        "planner_optional_matches", []
+                                    ),
                                     "preview": item.get("content_preview"),
                                 }
                                 for item in retrieval_items
@@ -204,19 +303,51 @@ async def _run_benchmark(
                             retrieval.get("query_planner_enabled")
                         ),
                         "router_sources": "|".join(plan.get("sources") or []),
-                        "router_domains": "|".join(
-                            plan.get("matched_domains") or []
+                        "router_domains": "|".join(plan.get("matched_domains") or []),
+                        "planner_required_terms": "|".join(
+                            plan.get("required_terms") or []
+                        ),
+                        "planner_optional_terms": "|".join(
+                            plan.get("optional_terms") or []
                         ),
                         "planned_search_query": retrieval.get("search_query", ""),
-                        "router_skipped_reason": retrieval.get(
-                            "skipped_reason", ""
+                        "retrieval_backend_result_count": int(
+                            retrieval.get("backend_result_count") or 0
                         ),
+                        "retrieval_planner_filter_stats_json": json.dumps(
+                            retrieval.get("planner_filter_stats") or {},
+                            ensure_ascii=False,
+                        ),
+                        "router_skipped_reason": retrieval.get("skipped_reason", ""),
                         "mother_result_count": int(mother.get("result_count") or 0),
                         "mother_paths": "|".join(
                             str(item.get("path")) for item in mother.get("items") or []
                         ),
                         "mother_items_json": json.dumps(
                             mother.get("items") or [], ensure_ascii=False
+                        ),
+                        "recent_goals_result_count": int(
+                            recent_goals.get("result_count") or 0
+                        ),
+                        "recent_goal_ids": "|".join(
+                            str(item.get("id"))
+                            for item in recent_goals.get("items") or []
+                        ),
+                        "recent_goals_items_json": json.dumps(
+                            recent_goals.get("items") or [], ensure_ascii=False
+                        ),
+                        "reviewed_memory_result_count": int(
+                            reviewed_memory.get("result_count") or 0
+                        ),
+                        "reviewed_memory_ids": "|".join(
+                            str(item.get("id"))
+                            for item in reviewed_memory.get("items") or []
+                        ),
+                        "reviewed_memory_items_json": json.dumps(
+                            reviewed_memory.get("items") or [], ensure_ascii=False
+                        ),
+                        "source_errors_json": json.dumps(
+                            source_errors, ensure_ascii=False
                         ),
                         "core_result_count": len(core.get("items") or []),
                         "core_anchor_keys": "|".join(
@@ -244,6 +375,8 @@ async def _run_benchmark(
                         "future_leak": bool(future_recent_ids or future_retrieval_ids),
                         "retrieval_relevant": "",
                         "recent_relevant": "",
+                        "recent_goals_relevant": "",
+                        "reviewed_memory_relevant": "",
                         "review_notes": "",
                     }
                 )
@@ -269,25 +402,36 @@ def _write_outputs(output_dir: Path, results: list[dict[str, Any]]) -> dict[str,
         writer.writerows(results)
 
     ok_rows = [row for row in results if row.get("status") == "ok"]
-    errors = [row for row in results if row.get("status") != "ok" or row.get("error")]
+    errors = [
+        row
+        for row in results
+        if row.get("status") != "ok"
+        or row.get("error")
+        or str(row.get("source_errors_json") or "{}").strip() != "{}"
+    ]
     by_theme: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in ok_rows:
         by_theme[str(row.get("theme") or "unknown")].append(row)
     summary = {
         "seed_count": len(results),
+        "rematched_seed_count": sum(
+            _is_true(row.get("message_id_rematched")) for row in results
+        ),
         "ok_count": len(ok_rows),
         "error_count": len(errors),
-        "router_enabled": any(
-            _is_true(row.get("router_enabled")) for row in ok_rows
-        ),
+        "router_enabled": any(_is_true(row.get("router_enabled")) for row in ok_rows),
         "query_planner_enabled": any(
             _is_true(row.get("query_planner_enabled")) for row in ok_rows
         ),
         "curated_sources_enabled": any(
-            int(row.get("mother_result_count") or 0) > 0
-            or int(row.get("core_result_count") or 0) > 0
-            or int(row.get("worldbook_result_count") or 0) > 0
+            any(int(row.get(key) or 0) > 0 for key in _CURATED_COUNT_KEYS)
             for row in ok_rows
+        ),
+        "recent_goals_nonempty_count": sum(
+            int(row.get("recent_goals_result_count") or 0) > 0 for row in ok_rows
+        ),
+        "reviewed_memory_nonempty_count": sum(
+            int(row.get("reviewed_memory_result_count") or 0) > 0 for row in ok_rows
         ),
         "mother_nonempty_count": sum(
             int(row.get("mother_result_count") or 0) > 0 for row in ok_rows
@@ -299,37 +443,32 @@ def _write_outputs(output_dir: Path, results: list[dict[str, Any]]) -> dict[str,
             int(row.get("worldbook_result_count") or 0) > 0 for row in ok_rows
         ),
         "curated_nonempty_count": sum(
-            any(
-                int(row.get(key) or 0) > 0
-                for key in (
-                    "mother_result_count",
-                    "core_result_count",
-                    "worldbook_result_count",
-                )
-            )
+            any(int(row.get(key) or 0) > 0 for key in _CURATED_COUNT_KEYS)
             for row in ok_rows
         ),
         "expected_retrieval_curated_nonempty_count": sum(
             _is_true(row.get("expected_retrieval"))
-            and any(
-                int(row.get(key) or 0) > 0
-                for key in (
-                    "mother_result_count",
-                    "core_result_count",
-                    "worldbook_result_count",
-                )
-            )
+            and any(int(row.get(key) or 0) > 0 for key in _CURATED_COUNT_KEYS)
             for row in ok_rows
         ),
         "no_context_with_curated_count": sum(
             _is_true(row.get("expected_no_context"))
-            and any(
-                int(row.get(key) or 0) > 0
-                for key in (
-                    "mother_result_count",
-                    "core_result_count",
-                    "worldbook_result_count",
-                )
+            and any(int(row.get(key) or 0) > 0 for key in _CURATED_COUNT_KEYS)
+            for row in ok_rows
+        ),
+        "expected_retrieval_any_source_nonempty_count": sum(
+            _is_true(row.get("expected_retrieval"))
+            and (
+                int(row.get("retrieval_result_count") or 0) > 0
+                or any(int(row.get(key) or 0) > 0 for key in _CURATED_COUNT_KEYS)
+            )
+            for row in ok_rows
+        ),
+        "no_context_with_any_source_count": sum(
+            _is_true(row.get("expected_no_context"))
+            and (
+                int(row.get("retrieval_result_count") or 0) > 0
+                or any(int(row.get(key) or 0) > 0 for key in _CURATED_COUNT_KEYS)
             )
             for row in ok_rows
         ),
@@ -365,14 +504,7 @@ def _write_outputs(output_dir: Path, results: list[dict[str, Any]]) -> dict[str,
                     int(row.get("retrieval_result_count") or 0) > 0 for row in rows
                 ),
                 "curated_nonempty": sum(
-                    any(
-                        int(row.get(key) or 0) > 0
-                        for key in (
-                            "mother_result_count",
-                            "core_result_count",
-                            "worldbook_result_count",
-                        )
-                    )
+                    any(int(row.get(key) or 0) > 0 for key in _CURATED_COUNT_KEYS)
                     for row in rows
                 ),
                 "average_recent_turns": round(
@@ -394,9 +526,7 @@ def _write_outputs(output_dir: Path, results: list[dict[str, Any]]) -> dict[str,
                 "Curated sources use current snapshots and are not valid "
                 "historical as-of evidence."
                 if any(
-                    int(row.get("mother_result_count") or 0) > 0
-                    or int(row.get("core_result_count") or 0) > 0
-                    or int(row.get("worldbook_result_count") or 0) > 0
+                    any(int(row.get(key) or 0) > 0 for key in _CURATED_COUNT_KEYS)
                     for row in ok_rows
                 )
                 else "Mutable curated sources and rolling summary are disabled."
@@ -413,11 +543,14 @@ def _write_outputs(output_dir: Path, results: list[dict[str, Any]]) -> dict[str,
         "# Context-selection benchmark pilot",
         "",
         f"- Seeds: {summary['seed_count']}",
+        f"- Seeds rematched by content: {summary['rematched_seed_count']}",
         f"- Successful builds: {summary['ok_count']}",
         f"- Errors: {summary['error_count']}",
         f"- Router enabled: {summary['router_enabled']}",
         f"- Query planner enabled: {summary['query_planner_enabled']}",
         f"- Curated-source candidates present: {summary['curated_sources_enabled']}",
+        f"- J recent-goals non-empty: {summary['recent_goals_nonempty_count']}",
+        f"- Reviewed-memory non-empty: {summary['reviewed_memory_nonempty_count']}",
         f"- Mother-memory non-empty: {summary['mother_nonempty_count']}",
         f"- Core-anchor non-empty: {summary['core_nonempty_count']}",
         f"- World Book non-empty: {summary['worldbook_nonempty_count']}",
@@ -430,6 +563,16 @@ def _write_outputs(output_dir: Path, results: list[dict[str, Any]]) -> dict[str,
         (
             "- No-context seeds with curated candidates: "
             f"{summary['no_context_with_curated_count']} / "
+            f"{summary['no_context_seed_count']}"
+        ),
+        (
+            "- Expected-retrieval seeds with any source candidates: "
+            f"{summary['expected_retrieval_any_source_nonempty_count']} / "
+            f"{summary['expected_retrieval_seed_count']}"
+        ),
+        (
+            "- No-context seeds with any source candidates: "
+            f"{summary['no_context_with_any_source_count']} / "
             f"{summary['no_context_seed_count']}"
         ),
         f"- Future leaks: {summary['future_leak_count']}",
@@ -499,8 +642,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--curated-sources",
         action="store_true",
         help=(
-            "Retrieve current mother-memory, Core Anchor, and World Book "
-            "snapshots without injecting them."
+            "Retrieve current J, reviewed-memory, mother-memory, Core Anchor, "
+            "and World Book snapshots without injecting them."
         ),
     )
     return parser
@@ -520,7 +663,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     )
     paths = _write_outputs(args.output_dir, results)
-    print(json.dumps({key: str(value.resolve()) for key, value in paths.items()}, indent=2))
+    print(
+        json.dumps(
+            {key: str(value.resolve()) for key, value in paths.items()}, indent=2
+        )
+    )
     return 0
 
 

@@ -5,10 +5,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-
 DEFAULT_DB_PATH = (
-    Path(r"C:\Users\ellat\Desktop\K_Space\kmlog-search\chat_data")
-    / "chat_search.db"
+    Path(r"C:\Users\ellat\Desktop\K_Space\kmlog-search\chat_data") / "chat_search.db"
 )
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -33,6 +31,16 @@ class ProxyConfig:
     retrieval_inject_enabled: bool = False
     retrieval_router_enabled: bool = False
     retrieval_query_planner_enabled: bool = False
+    recent_goals_enabled: bool = False
+    recent_goals_url: str | None = None
+    recent_goals_api_key: str | None = None
+    recent_goals_limit: int = 4
+    recent_goals_timeout_seconds: float = 3.0
+    reviewed_memory_enabled: bool = False
+    reviewed_memory_url: str | None = None
+    reviewed_memory_api_key: str | None = None
+    reviewed_memory_limit: int = 4
+    reviewed_memory_timeout_seconds: float = 3.0
     mother_memory_enabled: bool = False
     mother_memory_inject_enabled: bool = False
     mother_memory_url: str | None = None
@@ -91,11 +99,15 @@ def load_config() -> ProxyConfig:
     provider_key = os.getenv("CHAT_PROXY_PROVIDER_KEY", "").strip()
     worldbook_path_raw = os.getenv("CHAT_PROXY_WORLDBOOK_PATH", "").strip()
     worldbook_paths_raw = os.getenv("CHAT_PROXY_WORLDBOOK_PATHS", "").strip()
-    worldbook_path = Path(worldbook_path_raw).expanduser() if worldbook_path_raw else None
+    worldbook_path = (
+        Path(worldbook_path_raw).expanduser() if worldbook_path_raw else None
+    )
     worldbook_paths = _parse_path_list(worldbook_paths_raw)
     if worldbook_path:
         worldbook_paths = (worldbook_path, *worldbook_paths)
-    worldbook_enabled = _env_bool("CHAT_PROXY_WORLDBOOK_ENABLED") or bool(worldbook_paths)
+    worldbook_enabled = _env_bool("CHAT_PROXY_WORLDBOOK_ENABLED") or bool(
+        worldbook_paths
+    )
     worldbook_max_items = int(os.getenv("CHAT_PROXY_WORLDBOOK_MAX_ITEMS", "2"))
     worldbook_chars_total = int(os.getenv("CHAT_PROXY_WORLDBOOK_CHARS_TOTAL", "800"))
     retrieval_enabled = _env_bool("CHAT_PROXY_RETRIEVAL_ENABLED")
@@ -113,13 +125,33 @@ def load_config() -> ProxyConfig:
     kmlog_search_timeout_seconds = float(
         os.getenv("CHAT_PROXY_KMLOG_SEARCH_TIMEOUT_SECONDS", "3.0")
     )
-    mother_memory_enabled = _env_bool("CHAT_PROXY_MOTHER_MEMORY_ENABLED")
-    mother_memory_inject_enabled = _env_bool(
-        "CHAT_PROXY_MOTHER_MEMORY_INJECT_ENABLED"
+    recent_goals_enabled = _env_bool("CHAT_PROXY_RECENT_GOALS_ENABLED")
+    recent_goals_url = (
+        os.getenv("CHAT_PROXY_RECENT_GOALS_URL", "").strip() or kmlog_search_url
     )
+    recent_goals_api_key = (
+        os.getenv("CHAT_PROXY_RECENT_GOALS_API_KEY", "").strip() or kmlog_search_api_key
+    )
+    recent_goals_limit = int(os.getenv("CHAT_PROXY_RECENT_GOALS_LIMIT", "4"))
+    recent_goals_timeout_seconds = float(
+        os.getenv("CHAT_PROXY_RECENT_GOALS_TIMEOUT_SECONDS", "3.0")
+    )
+    reviewed_memory_enabled = _env_bool("CHAT_PROXY_REVIEWED_MEMORY_ENABLED")
+    reviewed_memory_url = (
+        os.getenv("CHAT_PROXY_REVIEWED_MEMORY_URL", "").strip() or kmlog_search_url
+    )
+    reviewed_memory_api_key = (
+        os.getenv("CHAT_PROXY_REVIEWED_MEMORY_API_KEY", "").strip()
+        or kmlog_search_api_key
+    )
+    reviewed_memory_limit = int(os.getenv("CHAT_PROXY_REVIEWED_MEMORY_LIMIT", "4"))
+    reviewed_memory_timeout_seconds = float(
+        os.getenv("CHAT_PROXY_REVIEWED_MEMORY_TIMEOUT_SECONDS", "3.0")
+    )
+    mother_memory_enabled = _env_bool("CHAT_PROXY_MOTHER_MEMORY_ENABLED")
+    mother_memory_inject_enabled = _env_bool("CHAT_PROXY_MOTHER_MEMORY_INJECT_ENABLED")
     mother_memory_url = (
-        os.getenv("CHAT_PROXY_MOTHER_MEMORY_URL", "").strip()
-        or kmlog_search_url
+        os.getenv("CHAT_PROXY_MOTHER_MEMORY_URL", "").strip() or kmlog_search_url
     )
     mother_memory_api_key = (
         os.getenv("CHAT_PROXY_MOTHER_MEMORY_API_KEY", "").strip()
@@ -134,12 +166,10 @@ def load_config() -> ProxyConfig:
     )
     core_anchors_enabled = _env_bool("CHAT_PROXY_CORE_ANCHORS_ENABLED")
     core_anchors_url = (
-        os.getenv("CHAT_PROXY_CORE_ANCHORS_URL", "").strip()
-        or kmlog_search_url
+        os.getenv("CHAT_PROXY_CORE_ANCHORS_URL", "").strip() or kmlog_search_url
     )
     core_anchors_api_key = (
-        os.getenv("CHAT_PROXY_CORE_ANCHORS_API_KEY", "").strip()
-        or kmlog_search_api_key
+        os.getenv("CHAT_PROXY_CORE_ANCHORS_API_KEY", "").strip() or kmlog_search_api_key
     )
     core_anchors_boot_keys = _parse_csv_list(
         os.getenv(
@@ -177,17 +207,14 @@ def load_config() -> ProxyConfig:
         or summary_upstream
     )
     daily_summary_api_key = (
-        os.getenv("CHAT_PROXY_DAILY_SUMMARY_API_KEY", "").strip()
-        or summary_api_key
+        os.getenv("CHAT_PROXY_DAILY_SUMMARY_API_KEY", "").strip() or summary_api_key
     )
     daily_summary_model = (
         os.getenv("CHAT_PROXY_DAILY_SUMMARY_MODEL", "").strip()
         or summary_model
         or "deepseek-v4-flash"
     )
-    daily_summary_recent_k = int(
-        os.getenv("CHAT_PROXY_DAILY_SUMMARY_RECENT_K", "200")
-    )
+    daily_summary_recent_k = int(os.getenv("CHAT_PROXY_DAILY_SUMMARY_RECENT_K", "200"))
     daily_summary_timezone = (
         os.getenv("CHAT_PROXY_DAILY_SUMMARY_TIMEZONE", "America/Toronto").strip()
         or "America/Toronto"
@@ -212,6 +239,16 @@ def load_config() -> ProxyConfig:
         retrieval_inject_enabled=retrieval_inject_enabled,
         retrieval_router_enabled=retrieval_router_enabled,
         retrieval_query_planner_enabled=retrieval_query_planner_enabled,
+        recent_goals_enabled=recent_goals_enabled,
+        recent_goals_url=recent_goals_url.rstrip("/") or None,
+        recent_goals_api_key=recent_goals_api_key or None,
+        recent_goals_limit=recent_goals_limit,
+        recent_goals_timeout_seconds=recent_goals_timeout_seconds,
+        reviewed_memory_enabled=reviewed_memory_enabled,
+        reviewed_memory_url=reviewed_memory_url.rstrip("/") or None,
+        reviewed_memory_api_key=reviewed_memory_api_key or None,
+        reviewed_memory_limit=reviewed_memory_limit,
+        reviewed_memory_timeout_seconds=reviewed_memory_timeout_seconds,
         mother_memory_enabled=mother_memory_enabled,
         mother_memory_inject_enabled=mother_memory_inject_enabled,
         mother_memory_url=mother_memory_url.rstrip("/") or None,
@@ -246,9 +283,7 @@ def load_config() -> ProxyConfig:
 
 
 def load_dotenv(path: Path | str | None = None) -> None:
-    env_path = Path(
-        path or os.getenv("CHAT_PROXY_ENV_FILE", ".env")
-    ).expanduser()
+    env_path = Path(path or os.getenv("CHAT_PROXY_ENV_FILE", ".env")).expanduser()
     if not env_path.exists() or not env_path.is_file():
         return
 
