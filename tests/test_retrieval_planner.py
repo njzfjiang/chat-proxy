@@ -185,3 +185,33 @@ def test_router_mode_can_exclude_constant_worldbook_entries():
 
     assert _match_worldbook_entry(entry, "失眠") is not None
     assert _match_worldbook_entry(entry, "失眠", allow_constant=False) is None
+
+
+def test_evidence_filter_uses_body_matches_and_full_content_hash():
+    from types import SimpleNamespace
+
+    plan = SimpleNamespace(required_terms=["FISTA"], optional_terms=[])
+    rows = [
+        {"id": 1, "content_preview": "same prefix", "conversation_title": "FISTA",
+         "evidence_version": 1, "body_matched_terms": [], "content_hash": "one"},
+        {"id": 2, "content_preview": "same prefix", "evidence_version": 1,
+         "body_matched_terms": ["FISTA"], "matched_excerpt": "FISTA converged", "content_hash": "two"},
+        {"id": 3, "content_preview": "same prefix", "evidence_version": 1,
+         "body_matched_terms": ["FISTA"], "matched_excerpt": "FISTA failed", "content_hash": "three"},
+        {"id": 4, "content_preview": "same prefix", "evidence_version": 1,
+         "body_matched_terms": ["FISTA"], "content_hash": "two"},
+    ]
+    ranked, stats = _rerank_kmlog_results(rows, plan=plan, limit=5)
+    assert [r["id"] for r in ranked] == [2, 3]
+    assert stats["entity_filtered"] == 1
+    assert stats["duplicate_filtered"] == 1
+
+
+def test_rejected_legacy_row_does_not_poison_dedup():
+    from types import SimpleNamespace
+
+    plan = SimpleNamespace(required_terms=["FISTA"], optional_terms=[])
+    rows = [{"id": 1, "content_preview": "same", "conversation_title": "other"},
+            {"id": 2, "content_preview": "same", "conversation_title": "FISTA"}]
+    ranked, _ = _rerank_kmlog_results(rows, plan=plan, limit=5)
+    assert [r["id"] for r in ranked] == [2]

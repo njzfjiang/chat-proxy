@@ -269,7 +269,8 @@ async def test_proxy_streams_and_persists_assistant_text(tmp_path, upstream_app,
     assert resp.text.count("data: [DONE]") == 1
     assert resp.headers["cache-control"] == "no-cache, no-transform"
     assert resp.headers["x-accel-buffering"] == "no"
-    assert resp.headers["x-chat-proxy-stream-policy"] == "done-short-circuit-v1"
+    assert resp.headers["x-chat-proxy-stream-policy"] == "done-short-circuit-v2"
+    assert resp.headers["x-chat-proxy-request-id"].startswith("req_")
 
     conn = sqlite3.connect(db_path)
     assistant = conn.execute(
@@ -350,7 +351,7 @@ async def test_proxy_stops_reading_after_done_without_waiting_for_upstream_close
         )
 
     assert resp.status_code == 200
-    assert resp.text.endswith("data: [DONE]")
+    assert resp.text.endswith("data: [DONE]\n\n")
     assert stream_closed.is_set()
 
     conn = sqlite3.connect(db_path)
@@ -440,8 +441,9 @@ async def test_proxy_finishes_partial_stream_on_incomplete_chunked_read(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("ending", [b"\n\n", b"\n", b""])
 async def test_proxy_adds_done_when_upstream_closes_cleanly_without_sentinel(
-    tmp_path, upstream_app, monkeypatch
+    tmp_path, upstream_app, monkeypatch, ending
 ):
     db_path = tmp_path / "chat_search.db"
     _create_base_db(db_path)
@@ -449,7 +451,7 @@ async def test_proxy_adds_done_when_upstream_closes_cleanly_without_sentinel(
     async def stream_without_done(_request: Request):
         async def chunks():
             yield b'data: {"choices":[{"delta":{"content":"complete"}}]}\n\n'
-            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}' + ending
 
         return StreamingResponse(chunks(), media_type="text/event-stream")
 
@@ -483,6 +485,7 @@ async def test_proxy_adds_done_when_upstream_closes_cleanly_without_sentinel(
     assert resp.status_code == 200
     assert resp.text.endswith("data: [DONE]\n\n")
     assert resp.text.count("data: [DONE]") == 1
+    assert "\n\ndata: [DONE]" in resp.text
 
     conn = sqlite3.connect(db_path)
     request_row = conn.execute(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import re
@@ -440,6 +441,7 @@ def extract_token_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
 
 class SseTextAccumulator:
     def __init__(self) -> None:
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._buffer = ""
         self._parts: list[str] = []
         self._usage: dict[str, int] | None = None
@@ -468,7 +470,7 @@ class SseTextAccumulator:
         return self._finish_reason
 
     def add_bytes(self, chunk: bytes) -> None:
-        self._buffer += chunk.decode("utf-8", errors="replace")
+        self._buffer += self._decoder.decode(chunk)
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
             self._consume_line(line.rstrip("\r"))
@@ -483,6 +485,7 @@ class SseTextAccumulator:
 
     def finish(self) -> None:
         """Consume a final unterminated SSE line after the upstream closes."""
+        self._buffer += self._decoder.decode(b"", final=True)
         if not self._buffer:
             return
         line, self._buffer = self._buffer, ""

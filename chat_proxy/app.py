@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import time
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import ProxyConfig, load_config
+from .streaming import ObservedStreamingResponse
 from .context_builder import (
     context_packet_from_snapshot,
     render_to_openai_messages,
@@ -759,6 +761,8 @@ async def _stream_upstream(
     client = httpx.AsyncClient(timeout=None)
     accumulator = SseTextAccumulator()
     raw_chunks: list[str] = []
+    raw_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    wire_tail = b""
     synthetic_done_emitted = False
     stream_started_at = time.monotonic()
     upstream_chunk_count = 0
@@ -783,6 +787,7 @@ async def _stream_upstream(
     async def body_iter():
         nonlocal synthetic_done_emitted
         nonlocal upstream_chunk_count, upstream_byte_count
+        nonlocal wire_tail
         status = "completed"
         error_text = None
         terminal_reason = "upstream_eof"
@@ -801,12 +806,15 @@ async def _stream_upstream(
                         upstream_chunk_count += 1
                         upstream_byte_count += len(chunk)
                         accumulator.add_bytes(chunk)
-                        raw_chunks.append(chunk.decode("utf-8", errors="replace"))
+                        raw_chunks.append(raw_decoder.decode(chunk))
+                        wire_tail = (wire_tail + chunk)[-4:]
                         yield chunk
                         # [DONE] is the protocol terminator. Do not wait for a
                         # buggy or long-lived upstream connection to close after
                         # the terminal event has already been forwarded.
                         if accumulator.done_received:
+                            if not wire_tail.endswith((b"\n\n", b"\r\n\r\n")):
+                                yield b"\n\n"
                             terminal_reason = "upstream_done"
                             break
                 except httpx.RemoteProtocolError as exc:
@@ -821,6 +829,7 @@ async def _stream_upstream(
                     error_text = "".join(raw_chunks)
 
                 accumulator.finish()
+                raw_chunks.append(raw_decoder.decode(b"", final=True))
                 if (
                     upstream.status_code < 400
                     and accumulator.saw_data
@@ -828,6 +837,8 @@ async def _stream_upstream(
                 ):
                     synthetic_done_emitted = True
                     terminal_reason = "synthetic_done_after_upstream_end"
+                    if not wire_tail.endswith((b"\n\n", b"\r\n\r\n")):
+                        yield b"\n\n"
                     yield b"data: [DONE]\n\n"
             except (asyncio.CancelledError, GeneratorExit):
                 status = "cancelled"
@@ -906,9 +917,11 @@ async def _stream_upstream(
         cache_control = f"{cache_control}, no-transform"
     response_headers["cache-control"] = cache_control
     response_headers.setdefault("x-accel-buffering", "no")
-    response_headers["x-chat-proxy-stream-policy"] = "done-short-circuit-v1"
-    return StreamingResponse(
+    response_headers["x-chat-proxy-stream-policy"] = "done-short-circuit-v2"
+    response_headers["x-chat-proxy-request-id"] = request_id
+    return ObservedStreamingResponse(
         body_iter(),
+        request_id=request_id,
         status_code=upstream.status_code,
         media_type=upstream.headers.get("content-type", "text/event-stream"),
         headers=response_headers,

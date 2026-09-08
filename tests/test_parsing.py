@@ -276,6 +276,15 @@ def test_sse_accumulator_reads_openai_delta_text():
     assert acc.done_received is True
 
 
+def test_sse_accumulator_preserves_split_utf8():
+    acc = SseTextAccumulator()
+    payload = 'data: {"choices":[{"delta":{"content":"中文🙂"}}]}\n\n'.encode()
+    for byte in payload:
+        acc.add_bytes(bytes([byte]))
+    acc.finish()
+    assert acc.text == "中文🙂"
+
+
 def test_sse_accumulator_flushes_unterminated_final_line():
     acc = SseTextAccumulator()
     acc.add_bytes(

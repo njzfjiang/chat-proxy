@@ -1224,24 +1224,38 @@ def _rerank_kmlog_results(
             continue
         item = dict(raw_item)
         preview = str(item.get("content_preview") or "").strip()
-        if preview.startswith("The following context is provided by the system."):
+        evidence = item.get("evidence_version") == 1
+        if item.get("synthetic_context") or preview.startswith(
+            "The following context is provided by the system."
+        ):
             synthetic_filtered += 1
             continue
-        normalized = re.sub(r"\s+", " ", preview).strip().casefold()
+        if evidence:
+            normalized = str(item.get("content_hash") or "")
+            haystack = str(item.get("matched_excerpt") or "")
+            body_terms = {
+                str(t).casefold() for t in item.get("body_matched_terms", [])
+            }
+        else:
+            normalized = re.sub(r"\s+", " ", preview).strip().casefold()
+            haystack = "\n".join([preview, str(item.get("conversation_title") or "")])
+            body_terms = set()
+        required_matches = [
+            term for term in required_terms
+            if term.casefold() in body_terms or _keyword_match(haystack, term)
+        ]
+        if required_terms and not required_matches:
+            entity_filtered += 1
+            continue
+        # Only accepted candidates may reserve a deduplication key.
         if normalized and normalized in seen_content:
             duplicate_filtered += 1
             continue
         if normalized:
             seen_content.add(normalized)
-        haystack = "\n".join([preview, str(item.get("conversation_title") or "")])
-        required_matches = [
-            term for term in required_terms if _keyword_match(haystack, term)
-        ]
-        if required_terms and not required_matches:
-            entity_filtered += 1
-            continue
         optional_matches = [
-            term for term in optional_terms if _keyword_match(haystack, term)
+            term for term in optional_terms
+            if term.casefold() in body_terms or _keyword_match(haystack, term)
         ]
         item["planner_required_matches"] = required_matches
         item["planner_optional_matches"] = optional_matches
@@ -1311,6 +1325,8 @@ def _kmlog_search_messages(
             search_query = plan.search_query
     snapshot["original_query"] = query
     snapshot["search_query"] = search_query
+    evidence_enabled = _body_bool(body, "retrieval_evidence_enabled", True)
+    snapshot["evidence_requested"] = evidence_enabled
 
     result_limit = max(1, min(cfg.kmlog_search_limit, 20))
     fetch_limit = result_limit
@@ -1322,6 +1338,10 @@ def _kmlog_search_messages(
         "mode": "auto",
         "kinds": ["chat"],
     }
+    if evidence_enabled:
+        payload["include_evidence"] = True
+        if query_planner_enabled:
+            payload["evidence_terms"] = list(plan.required_terms) + list(plan.optional_terms)
     as_of_timestamp = str(body.get("as_of_timestamp") or "").strip()
     if as_of_timestamp:
         payload["before"] = _exclusive_before_timestamp(as_of_timestamp)
@@ -1347,6 +1367,9 @@ def _kmlog_search_messages(
     if not isinstance(results, list):
         snapshot["error"] = "Search response did not contain results."
         return [], snapshot
+    snapshot["evidence_version"] = data.get("evidence_version")
+    snapshot["candidate_pool_ids"] = data.get("candidate_ids", [])
+    snapshot["backend_result_ids"] = [item.get("id") for item in results if isinstance(item, Mapping)]
     if as_of_timestamp:
         original_count = len(results)
         results = [
@@ -1364,6 +1387,7 @@ def _kmlog_search_messages(
             limit=result_limit,
         )
         snapshot["planner_filter_stats"] = planner_filter_stats
+    snapshot["selected_before_budget_ids"] = [item.get("id") for item in results if isinstance(item, Mapping)]
 
     remaining_chars = max(0, cfg.kmlog_search_chars_total)
     items: list[dict[str, Any]] = []
@@ -1371,7 +1395,7 @@ def _kmlog_search_messages(
     for raw_item in results:
         if not isinstance(raw_item, Mapping) or remaining_chars <= 0:
             continue
-        preview = str(raw_item.get("content_preview") or "").strip()
+        preview = str(raw_item.get("matched_excerpt") or raw_item.get("content_preview") or "").strip()
         if not preview:
             continue
         clipped = preview[:remaining_chars].rstrip()
@@ -1401,6 +1425,11 @@ def _kmlog_search_messages(
                 "match_type": raw_item.get("match_type"),
                 "relevance": raw_item.get("relevance"),
                 "token_hits": raw_item.get("token_hits"),
+                "evidence_version": raw_item.get("evidence_version"),
+                "body_matched_terms": raw_item.get("body_matched_terms", []),
+                "title_matched_terms": raw_item.get("title_matched_terms", []),
+                "content_hash": raw_item.get("content_hash"),
+                "match_spans": raw_item.get("match_spans", []),
                 "planner_required_matches": raw_item.get(
                     "planner_required_matches", []
                 ),
@@ -1420,6 +1449,7 @@ def _kmlog_search_messages(
             "message_count": 1 if inject and content else 0,
             "items": items,
             "result_count": len(items),
+            "selected_after_budget_ids": [item["id"] for item in items],
             "chars": len(content),
         }
     )
