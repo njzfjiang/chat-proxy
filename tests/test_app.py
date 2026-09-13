@@ -2,6 +2,7 @@ import json
 import asyncio
 import sqlite3
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -1013,7 +1014,7 @@ async def test_daily_summary_can_be_read_by_days_ago(tmp_path):
             daily_summary_timezone="America/Toronto",
         )
     )
-    today = datetime.now().date().isoformat()
+    today = datetime.now(ZoneInfo("America/Toronto")).date().isoformat()
     app.state.store.upsert_daily_summary(
         date_key=today,
         summary="Today summary",
