@@ -41,3 +41,25 @@ Planner, curated routing, kind policy and historical source availability are not
 changed. Compare against `context_selection_prod_router_planner_fixed_v2.zip` with
 the same seeds and data snapshot; nonempty context is not a relevance/recall score.
 This patch's fixed-case tests do not constitute a production benchmark rerun.
+
+## Follow-up: query and excerpt fixes
+
+The optional evidence backend now retains one-character non-ASCII alphanumeric
+queries (including CJK `药`). Queries with no evidence terms still reach the
+legacy candidate pool. Overlapping/adjacent windows are merged instead of repeated;
+the first three matching terms in planner order select the windows, rather than
+the first three source offsets. Each excerpt retains original character offsets.
+
+The proxy splits the body-character budget across evidence candidates before
+clipping, and omits a truncated fragment smaller than 40 characters (naturally
+short complete excerpts remain valid). Legacy responses retain their old budget
+behavior. Budgeting is measured in Python Unicode characters, not UTF-8 bytes.
+This simple allocation can leave budget unused; it is not an optimal evidence
+packer and does not ensure every matched entity survives clipping.
+
+The 32-seed A/B rerun is in
+`benchmark_outputs/context_selection_prod_evidence_ab_v4/`. Chat presence recovered
+from 17/23 to 18/23, with 0/6 no-context historical triggers and zero detected
+recent/chat future leaks. All four course/project seeds retain five excerpts.
+Curated selections are unchanged. Presence and candidate count are not relevance
+metrics; no answer model was called. The frozen Mother snapshot limitation remains.

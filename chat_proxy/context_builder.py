@@ -1390,6 +1390,7 @@ def _kmlog_search_messages(
     snapshot["selected_before_budget_ids"] = [item.get("id") for item in results if isinstance(item, Mapping)]
 
     remaining_chars = max(0, cfg.kmlog_search_chars_total)
+    evidence_item_budget = remaining_chars // max(1, len(results))
     items: list[dict[str, Any]] = []
     blocks: list[str] = []
     for raw_item in results:
@@ -1398,7 +1399,12 @@ def _kmlog_search_messages(
         preview = str(raw_item.get("matched_excerpt") or raw_item.get("content_preview") or "").strip()
         if not preview:
             continue
-        clipped = preview[:remaining_chars].rstrip()
+        item_budget = remaining_chars
+        if raw_item.get("evidence_version") == 1:
+            item_budget = min(item_budget, evidence_item_budget)
+            clipped = _clip_kmlog_excerpt(preview, item_budget)
+        else:
+            clipped = preview[:item_budget].rstrip()
         if not clipped:
             continue
         remaining_chars -= len(clipped)
@@ -1456,6 +1462,14 @@ def _kmlog_search_messages(
     if not inject or not content:
         return [], snapshot
     return [{"role": "system", "content": content}], snapshot
+
+
+def _clip_kmlog_excerpt(preview: str, budget: int) -> str:
+    # A tiny leftover fragment is not useful evidence; omit it rather than
+    # presenting a one-character candidate as retrieved context.
+    if budget < min(40, len(preview)):
+        return ""
+    return preview[:max(0, budget)].rstrip()
 
 
 def _exclusive_before_timestamp(value: str) -> str:

@@ -215,3 +215,43 @@ def test_rejected_legacy_row_does_not_poison_dedup():
             {"id": 2, "content_preview": "same", "conversation_title": "FISTA"}]
     ranked, _ = _rerank_kmlog_results(rows, plan=plan, limit=5)
     assert [r["id"] for r in ranked] == [2]
+
+
+def test_excerpt_budget_does_not_emit_tiny_trailing_fragments():
+    from chat_proxy.context_builder import _clip_kmlog_excerpt
+
+    assert _clip_kmlog_excerpt("long evidence " * 30, 1) == ""
+    assert _clip_kmlog_excerpt("short fact", 20) == "short fact"
+    assert len(_clip_kmlog_excerpt("x" * 720, 240)) == 240
+
+
+def test_evidence_items_share_the_total_budget(tmp_path, monkeypatch):
+    from chat_proxy import context_builder
+    from chat_proxy.config import ProxyConfig
+
+    rows = [{"id": i, "evidence_version": 1, "content_preview": "prefix",
+             "matched_excerpt": "x" * 720, "body_matched_terms": ["FISTA"]}
+            for i in range(5)]
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, *args, **kwargs):
+            from types import SimpleNamespace
+            return SimpleNamespace(raise_for_status=lambda: None,
+                                   json=lambda: {"results": rows, "evidence_version": 1})
+
+    monkeypatch.setattr(context_builder.httpx, "Client", FakeClient)
+    cfg = ProxyConfig(upstream_base="http://disabled", db_path=tmp_path / "unused.db",
+                      retrieval_enabled=True, kmlog_search_url="http://test",
+                      kmlog_search_chars_total=1200)
+    _, snapshot = context_builder._kmlog_search_messages(body={}, cfg=cfg, query="FISTA")
+    assert [i["chars"] for i in snapshot["items"]] == [240] * 5
+    assert snapshot["selected_after_budget_ids"] == list(range(5))
