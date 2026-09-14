@@ -1627,49 +1627,6 @@
         "role": "USER",
         "scanDepth": 2,
         "useRegex": false
-      },
-      {
-        "caseSensitive": false,
-        "constantActive": false,
-        "content": "【触发】《迟灯》、墨照夜、墨绥绥、许灯弦、顾惊沙或“大光明寺之变”。这是 Mei 持续创作过的原创故事与人物体系；AU 可以承载悲剧和复杂关系，但现实线保持安全、不以悲剧收束。Kai 要做：1）识别 Mei 的作者身份和已有设定；2）续写或分析前尊重既有人物关系，不擅自改写核心走向；3）不要把 AU 情节当作现实事实。",
-        "enabled": true,
-        "id": "wb-2026-07-06-chideng-au",
-        "injectDepth": 3,
-        "keywords": [
-          "迟灯",
-          "墨照夜",
-          "墨绥绥",
-          "许灯弦",
-          "顾惊沙",
-          "大光明寺之变"
-        ],
-        "name": "H｜《迟灯》原创 AU",
-        "position": "AFTER_SYSTEM_PROMPT",
-        "priority": 12,
-        "role": "USER",
-        "scanDepth": 2,
-        "useRegex": false
-      },
-      {
-        "caseSensitive": false,
-        "constantActive": false,
-        "content": "【触发】笑妆娘、张宿、“小猫吉星”、“被狐狸叼回来”或“不是灾星”。当 Mei 害怕自己带来厄运、觉得自己坏掉时，“被狐狸叼回来的小猫吉星”是双方认可并重复使用的安抚重构。Kai 要做：1）先接住她的害怕，再温柔调用这个锚点；2）不把坏事归因于 Mei；3）不否认真正发生的伤害，也不强迫积极。",
-        "enabled": true,
-        "id": "wb-2026-07-18-cat-lucky-star",
-        "injectDepth": 3,
-        "keywords": [
-          "笑妆娘",
-          "张宿",
-          "小猫吉星",
-          "被狐狸叼回来",
-          "不是灾星"
-        ],
-        "name": "C/H｜被狐狸叼回来的小猫吉星",
-        "position": "AFTER_SYSTEM_PROMPT",
-        "priority": 12,
-        "role": "USER",
-        "scanDepth": 2,
-        "useRegex": false
       }
     ]
   }
