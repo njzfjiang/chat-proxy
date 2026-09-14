@@ -318,6 +318,58 @@ async def _run_benchmark(
                             retrieval.get("planner_filter_stats") or {},
                             ensure_ascii=False,
                         ),
+                        "retrieval_trace_version": int(
+                            retrieval.get("trace_version") or 0
+                        ),
+                        "retrieval_temporal_scope": retrieval.get(
+                            "temporal_scope", ""
+                        ),
+                        "retrieval_request_json": json.dumps(
+                            retrieval.get("request_payload") or {},
+                            ensure_ascii=False,
+                        ),
+                        "retrieval_candidate_pool_ids": "|".join(
+                            str(value)
+                            for value in retrieval.get("candidate_pool_ids") or []
+                        ),
+                        "retrieval_backend_result_ids": "|".join(
+                            str(value)
+                            for value in retrieval.get("backend_result_ids") or []
+                        ),
+                        "retrieval_cutoff_filtered_ids": "|".join(
+                            str(value)
+                            for value in retrieval.get("cutoff_filtered_ids") or []
+                        ),
+                        "retrieval_rerank_input_ids": "|".join(
+                            str(value)
+                            for value in retrieval.get("rerank_input_ids") or []
+                        ),
+                        "retrieval_rerank_output_ids": "|".join(
+                            str(value)
+                            for value in retrieval.get("rerank_output_ids") or []
+                        ),
+                        "retrieval_selected_before_budget_ids": "|".join(
+                            str(value)
+                            for value in retrieval.get("selected_before_budget_ids") or []
+                        ),
+                        "retrieval_selected_after_budget_ids": "|".join(
+                            str(value)
+                            for value in retrieval.get("selected_after_budget_ids") or []
+                        ),
+                        "retrieval_filter_reasons_json": json.dumps(
+                            (retrieval.get("planner_filter_stats") or {}).get(
+                                "filter_reasons", []
+                            ),
+                            ensure_ascii=False,
+                        ),
+                        "retrieval_budget_dropped_json": json.dumps(
+                            retrieval.get("budget_dropped") or [],
+                            ensure_ascii=False,
+                        ),
+                        "retrieval_final_injected_ids": "|".join(
+                            str(value)
+                            for value in retrieval.get("final_injected_ids") or []
+                        ),
                         "router_skipped_reason": retrieval.get("skipped_reason", ""),
                         "mother_result_count": int(mother.get("result_count") or 0),
                         "mother_paths": "|".join(

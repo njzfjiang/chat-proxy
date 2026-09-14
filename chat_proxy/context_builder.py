@@ -1211,14 +1211,15 @@ def _rerank_kmlog_results(
     *,
     plan: Any,
     limit: int,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     required_terms = list(plan.required_terms)
     optional_terms = list(plan.optional_terms)
     ranked: list[tuple[int, int, int, dict[str, Any]]] = []
-    seen_content: set[str] = set()
+    seen_content: dict[str, Any] = {}
     synthetic_filtered = 0
     duplicate_filtered = 0
     entity_filtered = 0
+    filter_reasons: list[dict[str, Any]] = []
     for index, raw_item in enumerate(results):
         if not isinstance(raw_item, Mapping):
             continue
@@ -1229,6 +1230,7 @@ def _rerank_kmlog_results(
             "The following context is provided by the system."
         ):
             synthetic_filtered += 1
+            filter_reasons.append({"id": item.get("id"), "reason": "synthetic_context"})
             continue
         if evidence:
             normalized = str(item.get("content_hash") or "")
@@ -1246,13 +1248,27 @@ def _rerank_kmlog_results(
         ]
         if required_terms and not required_matches:
             entity_filtered += 1
+            filter_reasons.append(
+                {
+                    "id": item.get("id"),
+                    "reason": "missing_required_term",
+                    "required_terms": required_terms,
+                }
+            )
             continue
         # Only accepted candidates may reserve a deduplication key.
         if normalized and normalized in seen_content:
             duplicate_filtered += 1
+            filter_reasons.append(
+                {
+                    "id": item.get("id"),
+                    "reason": "duplicate_content",
+                    "duplicate_of": seen_content[normalized],
+                }
+            )
             continue
         if normalized:
-            seen_content.add(normalized)
+            seen_content[normalized] = item.get("id")
         optional_matches = [
             term for term in optional_terms
             if term.casefold() in body_terms or _keyword_match(haystack, term)
@@ -1270,6 +1286,7 @@ def _rerank_kmlog_results(
             "synthetic_filtered": synthetic_filtered,
             "duplicate_filtered": duplicate_filtered,
             "entity_filtered": entity_filtered,
+            "filter_reasons": filter_reasons,
         },
     )
 
@@ -1292,6 +1309,7 @@ def _kmlog_search_messages(
     )
     snapshot: dict[str, Any] = {
         "name": "kmlog_search",
+        "trace_version": 1,
         "enabled": enabled,
         "inject": inject,
         "router_enabled": router_enabled,
@@ -1347,6 +1365,8 @@ def _kmlog_search_messages(
         payload["before"] = _exclusive_before_timestamp(as_of_timestamp)
         snapshot["before"] = payload["before"]
         snapshot["as_of_timestamp"] = as_of_timestamp
+    snapshot["temporal_scope"] = "historical_as_of" if as_of_timestamp else "current_index"
+    snapshot["request_payload"] = dict(payload)
     headers = {"content-type": "application/json"}
     if cfg.kmlog_search_api_key:
         headers["x-api-key"] = cfg.kmlog_search_api_key
@@ -1369,16 +1389,28 @@ def _kmlog_search_messages(
         return [], snapshot
     snapshot["evidence_version"] = data.get("evidence_version")
     snapshot["candidate_pool_ids"] = data.get("candidate_ids", [])
+    snapshot["backend_candidate_count"] = data.get("candidate_count")
+    snapshot["backend_selected_ids"] = data.get("selected_ids", [])
     snapshot["backend_result_ids"] = [item.get("id") for item in results if isinstance(item, Mapping)]
+    snapshot["cutoff_filtered_ids"] = []
     if as_of_timestamp:
-        original_count = len(results)
+        cutoff_filtered_ids = [
+            item.get("id")
+            for item in results
+            if isinstance(item, Mapping)
+            and _timestamp_at_or_after(item.get("timestamp"), as_of_timestamp)
+        ]
         results = [
             item
             for item in results
             if not isinstance(item, Mapping)
             or not _timestamp_at_or_after(item.get("timestamp"), as_of_timestamp)
         ]
-        snapshot["filtered_at_or_after_cutoff"] = original_count - len(results)
+        snapshot["filtered_at_or_after_cutoff"] = len(cutoff_filtered_ids)
+        snapshot["cutoff_filtered_ids"] = cutoff_filtered_ids
+    snapshot["rerank_input_ids"] = [
+        item.get("id") for item in results if isinstance(item, Mapping)
+    ]
     if query_planner_enabled:
         snapshot["backend_result_count"] = len(results)
         results, planner_filter_stats = _rerank_kmlog_results(
@@ -1387,17 +1419,32 @@ def _kmlog_search_messages(
             limit=result_limit,
         )
         snapshot["planner_filter_stats"] = planner_filter_stats
+    snapshot["rerank_output_ids"] = [
+        item.get("id") for item in results if isinstance(item, Mapping)
+    ]
     snapshot["selected_before_budget_ids"] = [item.get("id") for item in results if isinstance(item, Mapping)]
 
     remaining_chars = max(0, cfg.kmlog_search_chars_total)
     evidence_item_budget = remaining_chars // max(1, len(results))
+    snapshot["budget_total_chars"] = remaining_chars
+    snapshot["budget_per_evidence_item_chars"] = evidence_item_budget
+    budget_dropped: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
     blocks: list[str] = []
     for raw_item in results:
-        if not isinstance(raw_item, Mapping) or remaining_chars <= 0:
+        if not isinstance(raw_item, Mapping):
+            budget_dropped.append({"id": None, "reason": "invalid_result"})
+            continue
+        if remaining_chars <= 0:
+            budget_dropped.append(
+                {"id": raw_item.get("id"), "reason": "budget_exhausted"}
+            )
             continue
         preview = str(raw_item.get("matched_excerpt") or raw_item.get("content_preview") or "").strip()
         if not preview:
+            budget_dropped.append(
+                {"id": raw_item.get("id"), "reason": "empty_excerpt"}
+            )
             continue
         item_budget = remaining_chars
         if raw_item.get("evidence_version") == 1:
@@ -1406,6 +1453,9 @@ def _kmlog_search_messages(
         else:
             clipped = preview[:item_budget].rstrip()
         if not clipped:
+            budget_dropped.append(
+                {"id": raw_item.get("id"), "reason": "below_minimum_fragment"}
+            )
             continue
         remaining_chars -= len(clipped)
         title = str(raw_item.get("conversation_title") or "").strip()
@@ -1434,7 +1484,12 @@ def _kmlog_search_messages(
                 "evidence_version": raw_item.get("evidence_version"),
                 "body_matched_terms": raw_item.get("body_matched_terms", []),
                 "title_matched_terms": raw_item.get("title_matched_terms", []),
+                "evidence_origin": raw_item.get("evidence_origin"),
+                "title_only": raw_item.get("title_only"),
                 "content_hash": raw_item.get("content_hash"),
+                "source_message_ids": raw_item.get("source_message_ids", []),
+                "duplicate_count": raw_item.get("duplicate_count"),
+                "duplicate_provenance": raw_item.get("duplicate_provenance", []),
                 "match_spans": raw_item.get("match_spans", []),
                 "planner_required_matches": raw_item.get(
                     "planner_required_matches", []
@@ -1443,6 +1498,9 @@ def _kmlog_search_messages(
                     "planner_optional_matches", []
                 ),
                 "chars": len(clipped),
+                "source_chars": len(preview),
+                "budget_limit": item_budget,
+                "truncated": len(clipped) < len(preview),
                 "content_preview": clipped,
             }
         )
@@ -1456,6 +1514,11 @@ def _kmlog_search_messages(
             "items": items,
             "result_count": len(items),
             "selected_after_budget_ids": [item["id"] for item in items],
+            "budget_dropped": budget_dropped,
+            "budget_used_chars": sum(item["chars"] for item in items),
+            "final_injected_ids": (
+                [item["id"] for item in items] if inject and content else []
+            ),
             "chars": len(content),
         }
     )

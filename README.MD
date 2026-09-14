@@ -121,6 +121,15 @@ For direct `/build_context` historical previews, `as_of_message_id` is exclusive
 for recent turns and `as_of_timestamp` is exclusive for KMLog retrieval. A
 historical cutoff suppresses the current rolling summary to prevent leakage.
 
+KMLog retrieval snapshots use `trace_version=1` and record the sanitized search
+payload, backend candidate/result IDs, cutoff removals, rerank input/output IDs,
+per-item filter reasons, budget removals, selected IDs, and actual injected IDs.
+The fixed evidence A/B runner is
+`benchmarks/context_selection/run_local_evidence_ab.py`; it writes to a new
+versioned output directory and refuses to overwrite an existing run. Use
+`compare_evidence_ab.py` to verify trace completeness and report candidate-order
+changes separately from retrieval-quality claims.
+
 ## Typed retrieval evidence
 
 `chat_proxy.retrieval_contracts` defines a source-level `MemoryItem` and a

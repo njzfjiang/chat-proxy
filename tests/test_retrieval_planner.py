@@ -92,6 +92,11 @@ def test_chat_reranker_requires_project_entity_and_deduplicates():
         "synthetic_filtered": 1,
         "duplicate_filtered": 1,
         "entity_filtered": 1,
+        "filter_reasons": [
+            {"id": 1, "reason": "missing_required_term", "required_terms": ["cyclegan", "pix2pix"]},
+            {"id": 3, "reason": "duplicate_content", "duplicate_of": 2},
+            {"id": 5, "reason": "synthetic_context"},
+        ],
     }
 
 
@@ -255,3 +260,23 @@ def test_evidence_items_share_the_total_budget(tmp_path, monkeypatch):
     _, snapshot = context_builder._kmlog_search_messages(body={}, cfg=cfg, query="FISTA")
     assert [i["chars"] for i in snapshot["items"]] == [240] * 5
     assert snapshot["selected_after_budget_ids"] == list(range(5))
+    assert snapshot["trace_version"] == 1
+    assert snapshot["temporal_scope"] == "current_index"
+    assert snapshot["request_payload"] == {
+        "query": "FISTA",
+        "limit": 5,
+        "mode": "auto",
+        "kinds": ["chat"],
+        "include_evidence": True,
+    }
+    assert snapshot["rerank_input_ids"] == list(range(5))
+    assert snapshot["rerank_output_ids"] == list(range(5))
+    assert snapshot["cutoff_filtered_ids"] == []
+    assert snapshot["budget_total_chars"] == 1200
+    assert snapshot["budget_per_evidence_item_chars"] == 240
+    assert snapshot["budget_used_chars"] == 1200
+    assert snapshot["budget_dropped"] == []
+    assert snapshot["final_injected_ids"] == []
+    assert all(item["source_chars"] == 720 for item in snapshot["items"])
+    assert all(item["budget_limit"] == 240 for item in snapshot["items"])
+    assert all(item["truncated"] is True for item in snapshot["items"])

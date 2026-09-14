@@ -4,8 +4,9 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RUN = ROOT / "benchmark_outputs/context_selection_prod_evidence_ab_v4"
+RUN = ROOT / "benchmark_outputs/context_selection_prod_evidence_trace_v5"
 BASE = ROOT / "benchmark_outputs/context_selection_prod_router_planner_fixed_v2"
+PREVIOUS_EVIDENCE = ROOT / "benchmark_outputs/context_selection_prod_evidence_ab_v4/evidence"
 
 
 def rows(path):
@@ -41,19 +42,63 @@ def main():
     assert len(snapshots) == len(evidence)
     active = [s for s in snapshots if "backend_result_ids" in s]
     assert all(s.get("evidence_version") == 1 for s in active)
+    trace_fields = {
+        "request_payload",
+        "candidate_pool_ids",
+        "backend_result_ids",
+        "cutoff_filtered_ids",
+        "rerank_input_ids",
+        "rerank_output_ids",
+        "selected_before_budget_ids",
+        "selected_after_budget_ids",
+        "budget_dropped",
+        "final_injected_ids",
+    }
+    trace_complete = sum(
+        snapshot.get("trace_version") == 1
+        and trace_fields.issubset(snapshot)
+        for snapshot in active
+    )
     evidence_items = [item for s in snapshots for item in s.get("items", [])]
     body_supported = sum(bool(item.get("body_matched_terms")) for item in evidence_items)
     unchanged_curated = all(all(a[key] == b[key] for key in (
         "mother_items_json", "core_items_json", "worldbook_items_json",
         "reviewed_memory_items_json", "recent_goals_items_json")) for a, b in zip(legacy, evidence))
+    previous_changes = []
+    if PREVIOUS_EVIDENCE.exists():
+        previous = rows(PREVIOUS_EVIDENCE)
+        assert [r["message_id"] for r in previous] == [r["message_id"] for r in evidence]
+        previous_changes = [
+            {
+                "seed_id": current["message_id"],
+                "theme": current["theme"],
+                "previous": old_row["retrieval_source_ids"],
+                "current": current["retrieval_source_ids"],
+            }
+            for old_row, current in zip(previous, evidence)
+            if old_row["retrieval_source_ids"] != current["retrieval_source_ids"]
+        ]
     result = {"changed_seed_count": len(changes), "changes": changes,
               "evidence_searches": len(active), "selected_items": len(evidence_items),
               "selected_items_with_body_terms": body_supported,
+              "complete_trace_count": trace_complete,
+              "changed_from_previous_evidence_count": len(previous_changes),
+              "changes_from_previous_evidence": previous_changes,
               "curated_identical_between_ab": unchanged_curated,
               "legacy_ids_equal_original_count": sum(a["retrieval_source_ids"] == b["retrieval_source_ids"] for a, b in zip(old, legacy))}
+    lines += ["", "## Changes from v4 evidence run", "",
+              "These changes include the newer kmlog-search candidate-pool and exact-body dedup behavior; they are not caused by trace fields alone.", "",
+              "| Seed | Theme | v4 evidence IDs | v5 evidence IDs |", "|---|---|---|---|"]
+    for change in previous_changes:
+        lines.append(
+            f"| {change['seed_id']} | {change['theme']} | "
+            f"{change['previous'].replace('|', ', ')} | "
+            f"{change['current'].replace('|', ', ')} |"
+        )
     lines += ["", "## Interpretation and limits", "",
               f"- Final chat candidate IDs/order changed for {len(changes)}/32 seeds.",
               f"- Evidence v1 verified in all {len(active)} executed chat searches.",
+              f"- Complete versioned traces: {trace_complete}/{len(active)} searches.",
               f"- Selected items with full-body lexical matches: {body_supported}/{len(evidence_items)}.",
               f"- Curated selections identical between A/B: {unchanged_curated}.",
               "- Nonempty candidates and lexical support are NOT precision, recall or answer quality.",
