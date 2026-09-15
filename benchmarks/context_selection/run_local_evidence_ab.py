@@ -26,7 +26,7 @@ from chat_proxy import context_builder
 def main():
     db = BACKEND / "chat_data/chat_search_prod.db"
     baseline = ROOT / "benchmark_outputs/context_selection_prod_router_planner_fixed_v2"
-    output = ROOT / "benchmark_outputs/context_selection_prod_evidence_trace_v5"
+    output = ROOT / "benchmark_outputs/context_selection_prod_evidence_anchor_v6"
     if output.exists():
         raise RuntimeError("Output exists; preserve prior runs by choosing a new directory")
     cfg = benchmark.load_config()
@@ -87,7 +87,7 @@ def main():
                   for key, value in asdict(cfg).items()
                   if not any(word in key for word in ("key", "url", "upstream", "provider"))}
     (output / "manifest.json").write_text(json.dumps({
-        "trace_schema_version": 1,
+        "trace_schema_version": 2,
         "db": str(db), "db_sha256": fingerprint(db),
         "baseline_csv_sha256": fingerprint(baseline / "results.csv"),
         "baseline_zip_sha256": fingerprint(baseline.with_suffix(".zip")),

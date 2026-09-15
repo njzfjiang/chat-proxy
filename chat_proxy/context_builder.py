@@ -1344,7 +1344,11 @@ def _kmlog_search_messages(
     snapshot["original_query"] = query
     snapshot["search_query"] = search_query
     evidence_enabled = _body_bool(body, "retrieval_evidence_enabled", True)
+    candidate_results_enabled = _body_bool(
+        body, "retrieval_candidate_results_enabled", False
+    )
     snapshot["evidence_requested"] = evidence_enabled
+    snapshot["candidate_results_requested"] = candidate_results_enabled
 
     result_limit = max(1, min(cfg.kmlog_search_limit, 20))
     fetch_limit = result_limit
@@ -1358,6 +1362,8 @@ def _kmlog_search_messages(
     }
     if evidence_enabled:
         payload["include_evidence"] = True
+        if candidate_results_enabled:
+            payload["include_candidate_results"] = True
         if query_planner_enabled:
             payload["evidence_terms"] = list(plan.required_terms) + list(plan.optional_terms)
     as_of_timestamp = str(body.get("as_of_timestamp") or "").strip()
@@ -1391,6 +1397,12 @@ def _kmlog_search_messages(
     snapshot["candidate_pool_ids"] = data.get("candidate_ids", [])
     snapshot["backend_candidate_count"] = data.get("candidate_count")
     snapshot["backend_selected_ids"] = data.get("selected_ids", [])
+    candidate_results = data.get("candidate_results", [])
+    snapshot["candidate_items"] = (
+        [dict(item) for item in candidate_results if isinstance(item, Mapping)]
+        if candidate_results_enabled and isinstance(candidate_results, list)
+        else []
+    )
     snapshot["backend_result_ids"] = [item.get("id") for item in results if isinstance(item, Mapping)]
     snapshot["cutoff_filtered_ids"] = []
     if as_of_timestamp:
@@ -1449,7 +1461,7 @@ def _kmlog_search_messages(
         item_budget = remaining_chars
         if raw_item.get("evidence_version") == 1:
             item_budget = min(item_budget, evidence_item_budget)
-            clipped = _clip_kmlog_excerpt(preview, item_budget)
+            clipped = _clip_kmlog_evidence(raw_item, item_budget)
         else:
             clipped = preview[:item_budget].rstrip()
         if not clipped:
@@ -1461,6 +1473,17 @@ def _kmlog_search_messages(
         title = str(raw_item.get("conversation_title") or "").strip()
         role = str(raw_item.get("role") or "").strip()
         timestamp = str(raw_item.get("timestamp") or "").strip()
+        body_matched_terms = list(raw_item.get("body_matched_terms", []))
+        required_matches = list(raw_item.get("planner_required_matches", []))
+        visible_matched_terms = [
+            term for term in body_matched_terms if _contains_kmlog_term(clipped, term)
+        ]
+        visible_required_terms = [
+            term for term in required_matches if _contains_kmlog_term(clipped, term)
+        ]
+        missing_required_terms = [
+            term for term in required_matches if term not in visible_required_terms
+        ]
         blocks.append(
             "\n".join(
                 part
@@ -1482,7 +1505,7 @@ def _kmlog_search_messages(
                 "relevance": raw_item.get("relevance"),
                 "token_hits": raw_item.get("token_hits"),
                 "evidence_version": raw_item.get("evidence_version"),
-                "body_matched_terms": raw_item.get("body_matched_terms", []),
+                "body_matched_terms": body_matched_terms,
                 "title_matched_terms": raw_item.get("title_matched_terms", []),
                 "evidence_origin": raw_item.get("evidence_origin"),
                 "title_only": raw_item.get("title_only"),
@@ -1491,9 +1514,7 @@ def _kmlog_search_messages(
                 "duplicate_count": raw_item.get("duplicate_count"),
                 "duplicate_provenance": raw_item.get("duplicate_provenance", []),
                 "match_spans": raw_item.get("match_spans", []),
-                "planner_required_matches": raw_item.get(
-                    "planner_required_matches", []
-                ),
+                "planner_required_matches": required_matches,
                 "planner_optional_matches": raw_item.get(
                     "planner_optional_matches", []
                 ),
@@ -1501,6 +1522,14 @@ def _kmlog_search_messages(
                 "source_chars": len(preview),
                 "budget_limit": item_budget,
                 "truncated": len(clipped) < len(preview),
+                "visible_matched_terms": visible_matched_terms,
+                "visible_required_terms": visible_required_terms,
+                "missing_required_terms": missing_required_terms,
+                "required_coverage": (
+                    len(visible_required_terms) / len(required_matches)
+                    if required_matches
+                    else None
+                ),
                 "content_preview": clipped,
             }
         )
@@ -1516,6 +1545,12 @@ def _kmlog_search_messages(
             "selected_after_budget_ids": [item["id"] for item in items],
             "budget_dropped": budget_dropped,
             "budget_used_chars": sum(item["chars"] for item in items),
+            "required_terms_visible_count": sum(
+                len(item["visible_required_terms"]) for item in items
+            ),
+            "required_terms_missing_count": sum(
+                len(item["missing_required_terms"]) for item in items
+            ),
             "final_injected_ids": (
                 [item["id"] for item in items] if inject and content else []
             ),
@@ -1533,6 +1568,93 @@ def _clip_kmlog_excerpt(preview: str, budget: int) -> str:
     if budget < min(40, len(preview)):
         return ""
     return preview[:max(0, budget)].rstrip()
+
+
+def _clip_kmlog_evidence(item: Mapping[str, Any], budget: int) -> str:
+    text = str(item.get("matched_excerpt") or item.get("content_preview") or "").strip()
+    if budget <= 0 or not text:
+        return ""
+    if len(text) <= budget:
+        return text
+
+    priority_terms = _dedupe_casefolded(
+        [
+            *(item.get("planner_required_matches") or []),
+            *(item.get("body_matched_terms") or []),
+        ]
+    )
+    anchors = []
+    for term in priority_terms:
+        span = _find_kmlog_term(text, term)
+        if span is not None:
+            anchors.append((term, *span))
+    if not anchors:
+        return _clip_kmlog_excerpt(text, budget)
+
+    separator = "\n...\n"
+    selected = []
+    minimum_chars = 0
+    for anchor in anchors:
+        added = len(anchor[0]) + (len(separator) if selected else 0)
+        if minimum_chars + added > budget:
+            continue
+        selected.append(anchor)
+        minimum_chars += added
+    if not selected:
+        return _clip_kmlog_excerpt(text, budget)
+
+    content_budget = budget - len(separator) * (len(selected) - 1)
+    widths = [len(anchor[0]) for anchor in selected]
+    remaining = content_budget - sum(widths)
+    for index in range(len(widths)):
+        share = remaining // (len(widths) - index)
+        widths[index] += share
+        remaining -= share
+
+    windows = []
+    for (_, start, end), width in zip(selected, widths):
+        center = (start + end) // 2
+        window_start = max(0, center - width // 2)
+        window_end = min(len(text), window_start + width)
+        window_start = max(0, window_end - width)
+        windows.append((window_start, window_end))
+
+    merged = []
+    for start, end in sorted(windows):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return separator.join(text[start:end] for start, end in merged).rstrip()
+
+
+def _dedupe_casefolded(values: list[Any]) -> list[str]:
+    result = []
+    seen = set()
+    for value in values:
+        term = str(value or "").strip()
+        key = term.casefold()
+        if term and key not in seen:
+            seen.add(key)
+            result.append(term)
+    return result
+
+
+def _find_kmlog_term(text: str, term: Any) -> tuple[int, int] | None:
+    value = str(term or "").strip()
+    if not value:
+        return None
+    pattern = re.escape(value)
+    if value[0].isascii() and value[0].isalnum():
+        pattern = r"(?<![a-zA-Z0-9_])" + pattern
+    if value[-1].isascii() and value[-1].isalnum():
+        pattern += r"(?![a-zA-Z0-9_])"
+    match = re.search(pattern, text, re.IGNORECASE)
+    return (match.start(), match.end()) if match else None
+
+
+def _contains_kmlog_term(text: str, term: Any) -> bool:
+    return _find_kmlog_term(text, term) is not None
 
 
 def _exclusive_before_timestamp(value: str) -> str:

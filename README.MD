@@ -130,6 +130,31 @@ versioned output directory and refuses to overwrite an existing run. Use
 `compare_evidence_ab.py` to verify trace completeness and report candidate-order
 changes separately from retrieval-quality claims.
 
+The optional small-model selector consumes the saved candidate pool and reuses
+`CHAT_PROXY_SUMMARY_UPSTREAM_BASE`, `CHAT_PROXY_SUMMARY_API_KEY`, and
+`CHAT_PROXY_SUMMARY_MODEL`. Always inspect the minimized payload manifest first:
+
+```powershell
+python benchmarks\context_selection\run_model_selector.py --dry-run
+```
+
+Only run it without `--dry-run` after authorization to send the bounded
+historical evidence payload to the configured summary upstream. The live runner
+is sequential, refuses to overwrite an existing output directory, and saves
+each completed seed incrementally. It is an offline experiment, not part of the
+request path. Compare a completed run with the rule-based selection using:
+
+```powershell
+python benchmarks\context_selection\compare_model_selector.py `
+  --selections benchmark_outputs\context_selection_prod_evidence_anchor_v6\model_selector_b\selections.json `
+  --evidence-results benchmark_outputs\context_selection_prod_evidence_anchor_v6\evidence\results.csv `
+  --output-json benchmark_outputs\context_selection_prod_evidence_anchor_v6\model_selector_b\comparison.json `
+  --output-markdown benchmark_outputs\context_selection_prod_evidence_anchor_v6\model_selector_b\report.md
+```
+
+This comparison measures selection changes, overlap, latency, and token use. It
+does not treat changed IDs as evidence of better relevance or answer quality.
+
 ## Typed retrieval evidence
 
 `chat_proxy.retrieval_contracts` defines a source-level `MemoryItem` and a

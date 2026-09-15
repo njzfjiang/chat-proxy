@@ -230,6 +230,38 @@ def test_excerpt_budget_does_not_emit_tiny_trailing_fragments():
     assert len(_clip_kmlog_excerpt("x" * 720, 240)) == 240
 
 
+def test_evidence_budget_keeps_required_anchor_visible():
+    from chat_proxy.context_builder import _clip_kmlog_evidence
+
+    excerpt = "early dataset " + "x" * 600 + " convex anchor " + "y" * 500
+    item = {
+        "matched_excerpt": excerpt,
+        "planner_required_matches": ["convex"],
+        "body_matched_terms": ["dataset", "convex"],
+    }
+
+    clipped = _clip_kmlog_evidence(item, 240)
+
+    assert len(clipped) <= 240
+    assert "convex" in clipped
+    assert "dataset" in clipped
+
+
+def test_evidence_budget_prioritizes_required_terms_when_all_anchors_do_not_fit():
+    from chat_proxy.context_builder import _clip_kmlog_evidence
+
+    item = {
+        "matched_excerpt": "required " + "x" * 100 + " optional-extra-long",
+        "planner_required_matches": ["required"],
+        "body_matched_terms": ["optional-extra-long"],
+    }
+
+    clipped = _clip_kmlog_evidence(item, 12)
+
+    assert "required" in clipped
+    assert "optional-extra-long" not in clipped
+
+
 def test_evidence_items_share_the_total_budget(tmp_path, monkeypatch):
     from chat_proxy import context_builder
     from chat_proxy.config import ProxyConfig
@@ -280,3 +312,6 @@ def test_evidence_items_share_the_total_budget(tmp_path, monkeypatch):
     assert all(item["source_chars"] == 720 for item in snapshot["items"])
     assert all(item["budget_limit"] == 240 for item in snapshot["items"])
     assert all(item["truncated"] is True for item in snapshot["items"])
+    assert all(item["visible_matched_terms"] == [] for item in snapshot["items"])
+    assert snapshot["required_terms_visible_count"] == 0
+    assert snapshot["required_terms_missing_count"] == 0

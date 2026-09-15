@@ -206,6 +206,7 @@ async def _run_benchmark(
                         "retrieval_inject": False,
                         "retrieval_router_enabled": router_enabled,
                         "retrieval_query_planner_enabled": query_planner_enabled,
+                        "retrieval_candidate_results_enabled": True,
                         "mother_memory_enabled": curated_sources,
                         "mother_memory_inject": False,
                         "core_anchors_inject": False,
@@ -369,6 +370,15 @@ async def _run_benchmark(
                         "retrieval_final_injected_ids": "|".join(
                             str(value)
                             for value in retrieval.get("final_injected_ids") or []
+                        ),
+                        "retrieval_candidate_item_count": len(
+                            retrieval.get("candidate_items") or []
+                        ),
+                        "retrieval_required_terms_visible_count": int(
+                            retrieval.get("required_terms_visible_count") or 0
+                        ),
+                        "retrieval_required_terms_missing_count": int(
+                            retrieval.get("required_terms_missing_count") or 0
                         ),
                         "router_skipped_reason": retrieval.get("skipped_reason", ""),
                         "mother_result_count": int(mother.get("result_count") or 0),
