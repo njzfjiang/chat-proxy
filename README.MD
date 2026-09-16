@@ -121,7 +121,7 @@ For direct `/build_context` historical previews, `as_of_message_id` is exclusive
 for recent turns and `as_of_timestamp` is exclusive for KMLog retrieval. A
 historical cutoff suppresses the current rolling summary to prevent leakage.
 
-KMLog retrieval snapshots use `trace_version=1` and record the sanitized search
+KMLog retrieval snapshots use `trace_version=2` and record the sanitized search
 payload, backend candidate/result IDs, cutoff removals, rerank input/output IDs,
 per-item filter reasons, budget removals, selected IDs, and actual injected IDs.
 The fixed evidence A/B runner is
@@ -135,14 +135,34 @@ The optional small-model selector consumes the saved candidate pool and reuses
 `CHAT_PROXY_SUMMARY_MODEL`. Always inspect the minimized payload manifest first:
 
 ```powershell
-python benchmarks\context_selection\run_model_selector.py --dry-run
+python benchmarks\context_selection\run_model_selector.py `
+  --thinking disabled `
+  --max-output-tokens 1200 `
+  --dry-run
 ```
 
-Only run it without `--dry-run` after authorization to send the bounded
-historical evidence payload to the configured summary upstream. The live runner
+Only add `--live` after authorization to send the bounded historical evidence
+payload to the configured summary upstream. Without `--live`, the runner only
+prints the manifest and payload hash. The live runner
 is sequential, refuses to overwrite an existing output directory, and saves
-each completed seed incrementally. It is an offline experiment, not part of the
-request path. Compare a completed run with the rule-based selection using:
+each completed seed incrementally. `disabled` is sent using DeepSeek's
+OpenAI-format `thinking` request field; use `--thinking default` for an upstream
+that does not support that extension. Selector output contains only the exact
+text slices visible to the model plus source offsets and hashes for audit. It is
+an offline experiment, not part of the request path.
+
+Build the same-pool, same-1,200-character A/B/C artifact without model calls:
+
+```powershell
+python benchmarks\context_selection\build_selector_abc.py `
+  --selections benchmark_outputs\context_selection_prod_evidence_anchor_v6\model_selector_b\selections.json `
+  --output-dir benchmark_outputs\context_selection_prod_evidence_anchor_v6\model_selector_b\abc_same_budget
+```
+
+Group A uses the backend top pool and current rule selector. Groups B and C use
+the exact model-visible candidate pool with the rule and model selectors,
+respectively. All three groups pass through the production evidence renderer.
+Compare a completed run's selection IDs using:
 
 ```powershell
 python benchmarks\context_selection\compare_model_selector.py `
@@ -527,7 +547,7 @@ written to SQLite.
 $env:CHAT_PROXY_SUMMARY_ENABLED="true"
 $env:CHAT_PROXY_SUMMARY_UPSTREAM_BASE="https://api.deepseek.com/v1"
 $env:CHAT_PROXY_SUMMARY_API_KEY="..."
-$env:CHAT_PROXY_SUMMARY_MODEL="deepseek-v4-flash"
+$env:CHAT_PROXY_SUMMARY_MODEL="deepseek-flash"
 $env:CHAT_PROXY_SUMMARY_RECENT_K="30"
 ```
 
@@ -547,7 +567,7 @@ candidate also receives a deterministic `target_layer` suggestion:
 $env:CHAT_PROXY_DAILY_SUMMARY_ENABLED="true"
 $env:CHAT_PROXY_DAILY_SUMMARY_UPSTREAM_BASE="https://api.deepseek.com/v1"
 $env:CHAT_PROXY_DAILY_SUMMARY_API_KEY="..."
-$env:CHAT_PROXY_DAILY_SUMMARY_MODEL="deepseek-v4-flash"
+$env:CHAT_PROXY_DAILY_SUMMARY_MODEL="deepseek-flash"
 $env:CHAT_PROXY_DAILY_SUMMARY_RECENT_K="200"
 $env:CHAT_PROXY_DAILY_SUMMARY_TIMEZONE="America/Toronto"
 ```

@@ -230,7 +230,7 @@ def test_excerpt_budget_does_not_emit_tiny_trailing_fragments():
     assert len(_clip_kmlog_excerpt("x" * 720, 240)) == 240
 
 
-def test_evidence_budget_keeps_required_anchor_visible():
+def test_evidence_budget_prioritizes_required_anchor_over_body_matches():
     from chat_proxy.context_builder import _clip_kmlog_evidence
 
     excerpt = "early dataset " + "x" * 600 + " convex anchor " + "y" * 500
@@ -244,6 +244,21 @@ def test_evidence_budget_keeps_required_anchor_visible():
 
     assert len(clipped) <= 240
     assert "convex" in clipped
+    assert "dataset" not in clipped
+
+
+def test_evidence_budget_uses_body_anchors_without_required_terms():
+    from chat_proxy.context_builder import _clip_kmlog_evidence
+
+    excerpt = "early dataset " + "x" * 600 + " trailing text"
+    item = {
+        "matched_excerpt": excerpt,
+        "planner_required_matches": [],
+        "body_matched_terms": ["dataset"],
+    }
+
+    clipped = _clip_kmlog_evidence(item, 120)
+
     assert "dataset" in clipped
 
 
@@ -260,6 +275,45 @@ def test_evidence_budget_prioritizes_required_terms_when_all_anchors_do_not_fit(
 
     assert "required" in clipped
     assert "optional-extra-long" not in clipped
+
+
+def test_evidence_budget_prefers_a_complete_short_sentence():
+    from chat_proxy.context_builder import _clip_kmlog_evidence
+
+    item = {
+        "matched_excerpt": (
+            "Unrelated setup with several words. "
+            "FISTA converged after twelve steps. "
+            "Unrelated trailing discussion with several words."
+        ),
+        "planner_required_matches": ["FISTA"],
+        "body_matched_terms": ["FISTA"],
+    }
+
+    clipped = _clip_kmlog_evidence(item, 45)
+
+    assert clipped == "FISTA converged after twelve steps."
+
+
+def test_evidence_budget_groups_required_terms_by_sentence():
+    from chat_proxy.context_builder import _clip_kmlog_evidence
+
+    item = {
+        "matched_excerpt": (
+            "LASSO is a convex formulation. "
+            "Methods include ISTA, accelerated FISTA, and ADMM. "
+            "Unrelated trailing explanation."
+        ),
+        "planner_required_matches": ["convex", "ISTA", "FISTA", "ADMM"],
+        "body_matched_terms": ["dataset"],
+    }
+
+    clipped = _clip_kmlog_evidence(item, 90)
+
+    assert clipped == (
+        "LASSO is a convex formulation.\n...\n"
+        "Methods include ISTA, accelerated FISTA, and ADMM."
+    )
 
 
 def test_evidence_items_share_the_total_budget(tmp_path, monkeypatch):
@@ -292,7 +346,7 @@ def test_evidence_items_share_the_total_budget(tmp_path, monkeypatch):
     _, snapshot = context_builder._kmlog_search_messages(body={}, cfg=cfg, query="FISTA")
     assert [i["chars"] for i in snapshot["items"]] == [240] * 5
     assert snapshot["selected_after_budget_ids"] == list(range(5))
-    assert snapshot["trace_version"] == 1
+    assert snapshot["trace_version"] == 2
     assert snapshot["temporal_scope"] == "current_index"
     assert snapshot["request_payload"] == {
         "query": "FISTA",
@@ -315,3 +369,17 @@ def test_evidence_items_share_the_total_budget(tmp_path, monkeypatch):
     assert all(item["visible_matched_terms"] == [] for item in snapshot["items"])
     assert snapshot["required_terms_visible_count"] == 0
     assert snapshot["required_terms_missing_count"] == 0
+
+
+def test_evidence_renderer_reallocates_unused_item_budget():
+    from chat_proxy.retrieval_evidence import render_kmlog_results
+
+    rows = [
+        {"id": 1, "evidence_version": 1, "matched_excerpt": "short fact"},
+        {"id": 2, "evidence_version": 1, "matched_excerpt": "x" * 200},
+    ]
+
+    _, snapshot = render_kmlog_results(rows, total_chars=100)
+
+    assert [item["chars"] for item in snapshot["items"]] == [10, 90]
+    assert snapshot["budget_strategy"] == "remaining_equal_share"

@@ -6,6 +6,7 @@ from chat_proxy.config import ProxyConfig
 from chat_proxy.retrieval_model_selector import (
     build_selector_candidates,
     parse_selector_result,
+    resolve_selector_evidence,
     select_retrieval_candidates,
 )
 
@@ -66,6 +67,59 @@ def test_selector_preserves_original_excerpt_indices():
     )
 
     assert result["selected"][0]["evidence_excerpt_indices"] == [1]
+
+
+def test_selector_exports_only_the_model_visible_slice():
+    source = [
+        {
+            "id": 10,
+            "role": "user",
+            "evidence_excerpts": [
+                {"text": "a" * 240},
+                {"text": "b" * 240},
+                {"text": "c" * 240},
+            ],
+        }
+    ]
+    visible = build_selector_candidates(source, 600)
+    selection = {
+        "selected": [
+            {
+                "id": 10,
+                "evidence_excerpt_indices": [2],
+                "reason": "third excerpt",
+            }
+        ]
+    }
+
+    resolved = resolve_selector_evidence(selection, visible, source)
+
+    assert resolved[0]["evidence"] == ["c" * 120]
+    assert resolved[0]["evidence_slices"][0]["source_end"] == 120
+    assert resolved[0]["evidence_slices"][0]["source_excerpt_chars"] == 240
+    assert len(resolved[0]["evidence_slices"][0]["source_excerpt_sha256"]) == 64
+
+
+def test_selector_slice_offsets_reference_the_untrimmed_source():
+    source = [{"id": 10, "evidence_excerpts": [{"text": "  visible text  "}]}]
+    visible = build_selector_candidates(source, 600)
+    selection = {
+        "selected": [
+            {
+                "id": 10,
+                "evidence_excerpt_indices": [0],
+                "reason": "direct",
+            }
+        ]
+    }
+
+    resolved = resolve_selector_evidence(selection, visible, source)
+    evidence_slice = resolved[0]["evidence_slices"][0]
+
+    assert evidence_slice["text"] == "visible text"
+    assert evidence_slice["source_start"] == 2
+    assert evidence_slice["source_end"] == 14
+    assert evidence_slice["source_excerpt_chars"] == 16
 
 
 @pytest.mark.parametrize(
@@ -132,12 +186,18 @@ def test_selector_call_reuses_summary_configuration(monkeypatch, tmp_path):
 
     result = asyncio.run(
         select_retrieval_candidates(
-            cfg=cfg, query="Which event?", candidates=_candidates()
+            cfg=cfg,
+            query="Which event?",
+            candidates=_candidates(),
+            thinking_mode="disabled",
+            max_output_tokens=320,
         )
     )
 
     assert captured["url"] == "https://summary.example/v1/chat/completions"
     assert captured["headers"]["authorization"] == "Bearer secret"
     assert captured["body"]["model"] == "small-selector"
+    assert captured["body"]["thinking"] == {"type": "disabled"}
+    assert captured["body"]["max_tokens"] == 320
     assert result["selected"][0]["id"] == 10
     assert result["usage"] == {"total_tokens": 12}

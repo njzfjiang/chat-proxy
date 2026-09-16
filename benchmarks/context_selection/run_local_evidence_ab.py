@@ -26,7 +26,7 @@ from chat_proxy import context_builder
 def main():
     db = BACKEND / "chat_data/chat_search_prod.db"
     baseline = ROOT / "benchmark_outputs/context_selection_prod_router_planner_fixed_v2"
-    output = ROOT / "benchmark_outputs/context_selection_prod_evidence_anchor_v6"
+    output = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v8"
     if output.exists():
         raise RuntimeError("Output exists; preserve prior runs by choosing a new directory")
     cfg = benchmark.load_config()
@@ -95,6 +95,7 @@ def main():
         "notes": ["Current curated snapshots; not historical as-of evidence",
                   "Mother lazy refresh disabled; use existing production DB sections",
                   "A/B toggles backend include_evidence; both use current proxy reranker",
+                  "Evidence arm uses sentence-aware clipping and dynamic budget reallocation",
                   "In-process HTTP transport; timeouts/network performance not evaluated"],
         "code_sha256": {str(p.relative_to(ROOT.parent)): fingerprint(p) for p in [
             ROOT / "chat_proxy/context_builder.py", ROOT / "chat_proxy/retrieval_planner.py",

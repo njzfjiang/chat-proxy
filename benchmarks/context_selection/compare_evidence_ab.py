@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RUN = ROOT / "benchmark_outputs/context_selection_prod_evidence_anchor_v6"
+RUN = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v8"
 BASE = ROOT / "benchmark_outputs/context_selection_prod_router_planner_fixed_v2"
-PREVIOUS_EVIDENCE = ROOT / "benchmark_outputs/context_selection_prod_evidence_trace_v5/evidence"
+PREVIOUS_EVIDENCE = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v7/evidence"
 
 
 def rows(path):
@@ -55,7 +55,7 @@ def main():
         "final_injected_ids",
     }
     trace_complete = sum(
-        snapshot.get("trace_version") == 1
+        snapshot.get("trace_version") == 2
         and trace_fields.issubset(snapshot)
         for snapshot in active
     )
@@ -86,9 +86,9 @@ def main():
               "changes_from_previous_evidence": previous_changes,
               "curated_identical_between_ab": unchanged_curated,
               "legacy_ids_equal_original_count": sum(a["retrieval_source_ids"] == b["retrieval_source_ids"] for a, b in zip(old, legacy))}
-    lines += ["", "## Changes from v5 evidence run", "",
-              "This comparison isolates candidate IDs from the anchor-aware clipping and candidate-exposure change.", "",
-              "| Seed | Theme | v5 evidence IDs | v6 evidence IDs |", "|---|---|---|---|"]
+    lines += ["", "## Changes from v7 evidence run", "",
+              "This comparison isolates candidate IDs from required-term sentence grouping and boundary fixes.", "",
+              "| Seed | Theme | v7 evidence IDs | v8 evidence IDs |", "|---|---|---|---|"]
     for change in previous_changes:
         lines.append(
             f"| {change['seed_id']} | {change['theme']} | "

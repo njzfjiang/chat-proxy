@@ -645,7 +645,7 @@ async def test_proxy_updates_summary_after_non_stream_response(
     await _wait_summary_tasks(app)
 
     assert resp.status_code == 200
-    assert summary_body["model"] == "deepseek-v4-flash"
+    assert summary_body["model"] == "deepseek-flash"
     assert summary_headers["authorization"] == "Bearer summary-secret"
     assert "user: hello" in summary_body["messages"][1]["content"]
     assert "assistant: answer" in summary_body["messages"][1]["content"]
@@ -663,7 +663,7 @@ FROM conversation_summary_versions
     conn.close()
 
     assert row == ("updated summary", 1, "completed", None)
-    assert history_row == (1, "updated summary", 2, "deepseek-v4-flash")
+    assert history_row == (1, "updated summary", 2, "deepseek-flash")
 
 
 @pytest.mark.anyio
@@ -897,7 +897,7 @@ async def test_proxy_updates_daily_summary_without_conversation_summary(
         admin = await client.get("/admin/daily-summary")
 
     assert resp.status_code == 200
-    assert daily_body["model"] == "deepseek-v4-flash"
+    assert daily_body["model"] == "deepseek-flash"
     assert "audit memory first" in daily_body["messages"][1]["content"]
     assert "answer" in daily_body["messages"][1]["content"]
     assert admin.status_code == 200

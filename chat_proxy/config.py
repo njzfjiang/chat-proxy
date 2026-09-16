@@ -18,7 +18,7 @@ class ProxyConfig:
     host: str = "127.0.0.1"
     port: int = 8787
     upstream_api_key: str | None = None
-    chat_model: str = "deepseek-v4-flash"
+    chat_model: str = "deepseek-flash"
     chat_recent_k: int = 20
     explicit_messages_recent_k: int = 0
     provider_key: str | None = None
@@ -63,12 +63,12 @@ class ProxyConfig:
     summary_enabled: bool = False
     summary_upstream_base: str | None = None
     summary_api_key: str | None = None
-    summary_model: str = "deepseek-v4-flash"
+    summary_model: str = "deepseek-flash"
     summary_recent_k: int = 30
     daily_summary_enabled: bool = False
     daily_summary_upstream_base: str | None = None
     daily_summary_api_key: str | None = None
-    daily_summary_model: str = "deepseek-v4-flash"
+    daily_summary_model: str = "deepseek-flash"
     daily_summary_recent_k: int = 200
     daily_summary_timezone: str = "America/Toronto"
 
@@ -90,7 +90,7 @@ def load_config() -> ProxyConfig:
     chat_model = (
         os.getenv("CHAT_PROXY_CHAT_MODEL", "").strip()
         or os.getenv("CHAT_PROXY_MODEL", "").strip()
-        or "deepseek-v4-flash"
+        or "deepseek-flash"
     )
     chat_recent_k = int(os.getenv("CHAT_PROXY_CHAT_RECENT_K", "20"))
     explicit_messages_recent_k = int(
@@ -197,8 +197,8 @@ def load_config() -> ProxyConfig:
     summary_upstream = os.getenv("CHAT_PROXY_SUMMARY_UPSTREAM_BASE", "").strip()
     summary_api_key = os.getenv("CHAT_PROXY_SUMMARY_API_KEY", "").strip()
     summary_model = (
-        os.getenv("CHAT_PROXY_SUMMARY_MODEL", "deepseek-v4-flash").strip()
-        or "deepseek-v4-flash"
+        os.getenv("CHAT_PROXY_SUMMARY_MODEL", "deepseek-flash").strip()
+        or "deepseek-flash"
     )
     summary_recent_k = int(os.getenv("CHAT_PROXY_SUMMARY_RECENT_K", "30"))
     daily_summary_enabled = _env_bool("CHAT_PROXY_DAILY_SUMMARY_ENABLED")
@@ -212,7 +212,7 @@ def load_config() -> ProxyConfig:
     daily_summary_model = (
         os.getenv("CHAT_PROXY_DAILY_SUMMARY_MODEL", "").strip()
         or summary_model
-        or "deepseek-v4-flash"
+        or "deepseek-flash"
     )
     daily_summary_recent_k = int(os.getenv("CHAT_PROXY_DAILY_SUMMARY_RECENT_K", "200"))
     daily_summary_timezone = (

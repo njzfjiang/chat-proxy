@@ -34,7 +34,7 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
                 "CHAT_PROXY_KMLOG_SEARCH_CHARS_TOTAL=1500",
                 "CHAT_PROXY_KMLOG_SEARCH_TIMEOUT_SECONDS=2.5",
                 "CHAT_PROXY_SUMMARY_ENABLED=true",
-                "CHAT_PROXY_SUMMARY_MODEL='deepseek-v4-flash'",
+                "CHAT_PROXY_SUMMARY_MODEL='deepseek-flash'",
                 'CHAT_PROXY_SUMMARY_API_KEY="abc#123"',
                 "CHAT_PROXY_DAILY_SUMMARY_ENABLED=true",
                 "CHAT_PROXY_DAILY_SUMMARY_RECENT_K=125",
@@ -119,12 +119,12 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     assert cfg.kmlog_search_chars_total == 1500
     assert cfg.kmlog_search_timeout_seconds == 2.5
     assert cfg.summary_enabled is True
-    assert cfg.summary_model == "deepseek-v4-flash"
+    assert cfg.summary_model == "deepseek-flash"
     assert cfg.summary_api_key == "abc#123"
     assert cfg.daily_summary_enabled is True
     assert cfg.daily_summary_upstream_base is None
     assert cfg.daily_summary_api_key == "abc#123"
-    assert cfg.daily_summary_model == "deepseek-v4-flash"
+    assert cfg.daily_summary_model == "deepseek-flash"
     assert cfg.daily_summary_recent_k == 125
     assert cfg.port == 9999
 
