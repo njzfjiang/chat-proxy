@@ -1219,6 +1219,9 @@ def _rerank_kmlog_results(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     required_terms = list(plan.required_terms)
     optional_terms = list(plan.optional_terms)
+    require_all_required_terms = "creative_writing" in set(
+        getattr(plan, "matched_domains", ())
+    )
     ranked: list[tuple[int, int, int, dict[str, Any]]] = []
     seen_content: dict[str, Any] = {}
     synthetic_filtered = 0
@@ -1251,15 +1254,22 @@ def _rerank_kmlog_results(
             term for term in required_terms
             if term.casefold() in body_terms or _keyword_match(haystack, term)
         ]
-        if required_terms and not required_matches:
+        missing_required_terms = [
+            term for term in required_terms if term not in required_matches
+        ]
+        if required_terms and (
+            not required_matches
+            or (require_all_required_terms and missing_required_terms)
+        ):
             entity_filtered += 1
-            filter_reasons.append(
-                {
-                    "id": item.get("id"),
-                    "reason": "missing_required_term",
-                    "required_terms": required_terms,
-                }
-            )
+            reason = {
+                "id": item.get("id"),
+                "reason": "missing_required_term",
+                "required_terms": required_terms,
+            }
+            if require_all_required_terms:
+                reason["missing_required_terms"] = missing_required_terms
+            filter_reasons.append(reason)
             continue
         # Only accepted candidates may reserve a deduplication key.
         if normalized and normalized in seen_content:

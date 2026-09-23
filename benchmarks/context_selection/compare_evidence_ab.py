@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RUN = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v8"
+RUN = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v11"
 BASE = ROOT / "benchmark_outputs/context_selection_prod_router_planner_fixed_v2"
-PREVIOUS_EVIDENCE = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v7/evidence"
+PREVIOUS_EVIDENCE = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v8/evidence"
 
 
 def rows(path):

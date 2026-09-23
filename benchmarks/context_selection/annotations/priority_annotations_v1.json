@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "annotation_method": "manual review with group names and selector reasons hidden until preference was recorded",
+  "quality_claim": "six prioritized seeds only; not a global selector accuracy estimate",
+  "labels": [
+    {
+      "seed_id": "10497",
+      "candidate_pool_sufficient": true,
+      "preferred_group": "c_common_pool_model",
+      "group_task_support": {
+        "a_backend_pool_rule": "partial",
+        "b_common_pool_rule": "partial",
+        "c_common_pool_model": "yes"
+      },
+      "fact_status": "supported_as_of_seed",
+      "event_redundancy": "low",
+      "should_reject": false,
+      "failure_class": null,
+      "notes": "The preferred body directly covers file server, managed DB, monitoring, Kubernetes, and pod health. Rule groups are mostly generic deployment or schedule context."
+    },
+    {
+      "seed_id": "12762",
+      "candidate_pool_sufficient": true,
+      "preferred_group": "c_common_pool_model",
+      "group_task_support": {
+        "a_backend_pool_rule": "partial",
+        "b_common_pool_rule": "partial",
+        "c_common_pool_model": "yes"
+      },
+      "fact_status": "supported_as_of_seed",
+      "event_redundancy": "low",
+      "should_reject": false,
+      "failure_class": null,
+      "notes": "The preferred body preserves the paper reproduction, prototype, evaluation, presentation, and scope requirements. Rule groups mix in unrelated Cloud scheduling."
+    },
+    {
+      "seed_id": "11847",
+      "candidate_pool_sufficient": false,
+      "preferred_group": "c_common_pool_model",
+      "group_task_support": {
+        "a_backend_pool_rule": "no",
+        "b_common_pool_rule": "no",
+        "c_common_pool_model": "yes"
+      },
+      "fact_status": "not_applicable",
+      "event_redundancy": "none",
+      "should_reject": true,
+      "failure_class": "irrelevant_single_candidate",
+      "notes": "The only candidate concerns a hand wound, not tooth or wisdom-tooth history. Rejecting all retrieved evidence is correct."
+    },
+    {
+      "seed_id": "8422",
+      "candidate_pool_sufficient": false,
+      "preferred_group": null,
+      "group_task_support": {
+        "a_backend_pool_rule": "no",
+        "b_common_pool_rule": "no",
+        "c_common_pool_model": "no"
+      },
+      "fact_status": "not_applicable",
+      "event_redundancy": "high",
+      "should_reject": true,
+      "failure_class": "discussion_source_overweighted",
+      "notes": "The current database contains no prior details about the external DeepSeek plot discussion. The planner searched for DeepSeek and returned relationship chatter instead of treating plot, character, and evidence as the subject."
+    },
+    {
+      "seed_id": "831",
+      "candidate_pool_sufficient": true,
+      "preferred_group": "c_common_pool_model",
+      "group_task_support": {
+        "a_backend_pool_rule": "partial",
+        "b_common_pool_rule": "partial",
+        "c_common_pool_model": "yes"
+      },
+      "fact_status": "supported_as_of_seed",
+      "event_redundancy": "moderate",
+      "should_reject": false,
+      "failure_class": null,
+      "notes": "The preferred body includes the current mother-memory merge input, Recent Goals path, and compact kernel architecture. Other groups omit the current source-state evidence."
+    },
+    {
+      "seed_id": "10741",
+      "candidate_pool_sufficient": true,
+      "preferred_group": "c_common_pool_model",
+      "group_task_support": {
+        "a_backend_pool_rule": "partial",
+        "b_common_pool_rule": "no",
+        "c_common_pool_model": "partial"
+      },
+      "fact_status": "mixed_relevant_non_conflicting",
+      "event_redundancy": "moderate",
+      "should_reject": false,
+      "failure_class": "selection_incomplete",
+      "notes": "The preferred body has direct prior self-identity discussion and presentation context, but no group combines the strongest identity candidates into a complete answer-supporting set."
+    }
+  ]
+}

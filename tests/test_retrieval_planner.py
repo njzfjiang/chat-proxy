@@ -180,6 +180,44 @@ def test_motion_phrase_does_not_trigger_recollection():
     assert SOURCE_CHAT_HISTORY not in plan.sources
 
 
+def test_recollection_uses_story_subject_instead_of_discussion_source():
+    plan = plan_retrieval(
+        "我之前在和deepseek讨论这个，但是现在推进剧情需要某个人物拿到某片证据"
+    )
+
+    assert "creative_writing" in plan.matched_domains
+    assert "recollection" in plan.matched_domains
+    assert plan.search_query == "剧情 人物 证据"
+    assert plan.required_terms == ("剧情", "人物", "证据")
+    assert plan.optional_terms == ()
+    assert "deepseek" not in plan.search_query.casefold()
+    assert "之前" not in plan.search_query
+
+
+def test_recollection_keeps_topic_named_after_discussion_source():
+    plan = plan_retrieval("我之前和DeepSeek讨论FISTA convergence，还记得吗")
+
+    assert "fista" in plan.search_query.casefold()
+    assert "convergence" in plan.search_query.casefold()
+    assert "deepseek" not in plan.search_query.casefold()
+
+
+def test_creative_writing_reranker_requires_all_explicit_story_terms():
+    plan = plan_retrieval("推进剧情时，人物怎么拿到证据")
+    rows = [
+        {"id": 1, "content_preview": "剧情里出现了一份证据"},
+        {"id": 2, "content_preview": "这个人物推动了剧情"},
+        {"id": 3, "content_preview": "人物在剧情里拿到了证据"},
+    ]
+
+    ranked, stats = _rerank_kmlog_results(rows, plan=plan, limit=5)
+
+    assert [item["id"] for item in ranked] == [3]
+    assert stats["entity_filtered"] == 2
+    assert stats["filter_reasons"][0]["missing_required_terms"] == ["人物"]
+    assert stats["filter_reasons"][1]["missing_required_terms"] == ["证据"]
+
+
 def test_router_mode_can_exclude_constant_worldbook_entries():
     entry = {
         "id": "always-on",

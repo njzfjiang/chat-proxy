@@ -23,10 +23,22 @@ from chat_proxy import context_selection_benchmark as benchmark
 from chat_proxy import context_builder
 
 
+MANIFEST_CODE_PATHS = (
+    ROOT / "benchmarks/context_selection/run_local_evidence_ab.py",
+    ROOT / "chat_proxy/context_builder.py",
+    ROOT / "chat_proxy/retrieval_planner.py",
+    ROOT / "chat_proxy/retrieval_evidence.py",
+    ROOT / "chat_proxy/context_selection_benchmark.py",
+    BACKEND / "servers/app.py",
+    BACKEND / "servers/search_sqlite.py",
+    BACKEND / "servers/message_search.py",
+)
+
+
 def main():
     db = BACKEND / "chat_data/chat_search_prod.db"
     baseline = ROOT / "benchmark_outputs/context_selection_prod_router_planner_fixed_v2"
-    output = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v8"
+    output = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v11"
     if output.exists():
         raise RuntimeError("Output exists; preserve prior runs by choosing a new directory")
     cfg = benchmark.load_config()
@@ -97,11 +109,10 @@ def main():
                   "A/B toggles backend include_evidence; both use current proxy reranker",
                   "Evidence arm uses sentence-aware clipping and dynamic budget reallocation",
                   "In-process HTTP transport; timeouts/network performance not evaluated"],
-        "code_sha256": {str(p.relative_to(ROOT.parent)): fingerprint(p) for p in [
-            ROOT / "chat_proxy/context_builder.py", ROOT / "chat_proxy/retrieval_planner.py",
-            ROOT / "chat_proxy/context_selection_benchmark.py",
-            BACKEND / "servers/app.py", BACKEND / "servers/search_sqlite.py",
-            BACKEND / "servers/message_search.py"]},
+        "code_sha256": {
+            str(path.relative_to(ROOT.parent)): fingerprint(path)
+            for path in MANIFEST_CODE_PATHS
+        },
     }, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     try:
         for evidence in (False, True):

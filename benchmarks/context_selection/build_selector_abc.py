@@ -77,6 +77,68 @@ def _model_selected_candidates(
     return result
 
 
+def _selector_visible_candidates(
+    model_candidates: list[Mapping[str, Any]],
+    source_candidates: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build rule-selector inputs from exactly the evidence serialized for the model."""
+    source_by_id = {candidate.get("id"): candidate for candidate in source_candidates}
+    result = []
+    for visible in model_candidates:
+        candidate_id = visible.get("id")
+        source = source_by_id.get(candidate_id)
+        if source is None:
+            raise RuntimeError(
+                f"selector-visible candidate {candidate_id!r} has no source candidate"
+            )
+        visible_excerpts = [
+            dict(excerpt)
+            for excerpt in visible.get("evidence_excerpts") or []
+            if isinstance(excerpt, Mapping)
+        ]
+        visible_text = "\n...\n".join(
+            str(excerpt.get("text") or "") for excerpt in visible_excerpts
+        )
+        candidate = {
+            key: source.get(key)
+            for key in (
+                "match_type",
+                "relevance",
+                "token_hits",
+                "evidence_origin",
+                "title_only",
+                "duplicate_count",
+                "duplicate_provenance",
+                "match_spans",
+            )
+            if key in source
+        }
+        candidate.update(
+            {
+                "id": candidate_id,
+                "timestamp": visible.get("timestamp"),
+                "role": visible.get("role"),
+                "conversation_title": visible.get("conversation_title"),
+                "body_matched_terms": list(
+                    visible.get("body_matched_terms") or []
+                ),
+                "source_message_ids": list(
+                    visible.get("source_message_ids") or []
+                ),
+                "evidence_excerpts": visible_excerpts,
+                "evidence_version": 1,
+                "matched_excerpt": visible_text,
+                "content_preview": visible_text,
+                # Deduplicate on model-visible evidence, not hidden source text.
+                "content_hash": hashlib.sha256(
+                    visible_text.encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+        result.append(candidate)
+    return result
+
+
 def _render_group(
     *, input_ids: list[Any], selected: list[dict[str, Any]], total_chars: int
 ) -> dict[str, Any]:
@@ -112,21 +174,33 @@ def evaluate_seed(
     baseline_selected, baseline_stats = _rerank_kmlog_results(
         baseline_input, plan=plan, limit=selection_limit
     )
+    model_candidates = build_selector_candidates(common_pool, max_candidate_chars)
+    visible_ids = [candidate.get("id") for candidate in model_candidates]
+    dropped_nonserializable_ids = [
+        candidate_id for candidate_id in common_ids if candidate_id not in visible_ids
+    ]
+    visible_common_pool = _selector_visible_candidates(
+        model_candidates, common_pool
+    )
     expanded_selected, expanded_stats = _rerank_kmlog_results(
-        common_pool, plan=plan, limit=selection_limit
+        visible_common_pool, plan=plan, limit=selection_limit
     )
 
-    model_candidates = build_selector_candidates(common_pool, max_candidate_chars)
     resolved = resolve_selector_evidence(
         selector_row, model_candidates, common_pool
     )
     model_selected = _model_selected_candidates(
-        resolved, common_pool, plan.required_terms
+        resolved, visible_common_pool, plan.required_terms
     )
 
     return {
         "seed_id": str(selector_row.get("seed_id") or ""),
         "theme": selector_row.get("theme"),
+        "candidate_pool_audit": {
+            "declared_input_ids": common_ids,
+            "visible_input_ids": visible_ids,
+            "dropped_nonserializable_ids": dropped_nonserializable_ids,
+        },
         "groups": {
             "a_backend_pool_rule": {
                 **_render_group(
@@ -138,20 +212,22 @@ def evaluate_seed(
             },
             "b_common_pool_rule": {
                 **_render_group(
-                    input_ids=common_ids,
+                    input_ids=visible_ids,
                     selected=expanded_selected,
                     total_chars=total_chars,
                 ),
                 "filter_stats": expanded_stats,
+                "candidate_representation": "selector_visible_v1",
             },
             "c_common_pool_model": {
                 **_render_group(
-                    input_ids=common_ids,
+                    input_ids=visible_ids,
                     selected=model_selected,
                     total_chars=total_chars,
                 ),
                 "reject_all_reason": selector_row.get("reject_all_reason"),
                 "selection_audit": resolved,
+                "candidate_representation": "selector_visible_v1",
             },
         },
     }
@@ -222,6 +298,11 @@ def main() -> int:
     summary = {
         "seed_count": len(results),
         "total_chars_per_group": args.total_chars,
+        "input_representation_adjusted_seed_ids": [
+            row["seed_id"]
+            for row in results
+            if row["candidate_pool_audit"]["dropped_nonserializable_ids"]
+        ],
         "a_vs_b_changed_seed_count": len(a_vs_b_changed),
         "a_vs_b_changed_seed_ids": a_vs_b_changed,
         "b_vs_c_changed_seed_count": len(b_vs_c_changed),
@@ -254,8 +335,8 @@ def main() -> int:
                 },
                 "group_contract": {
                     "a": "backend top pool, rule selector, shared renderer",
-                    "b": "model-visible common pool, rule selector, shared renderer",
-                    "c": "model-visible common pool, model selector, shared renderer",
+                    "b": "serializable model-visible common pool, rule selector, shared renderer",
+                    "c": "serializable model-visible common pool, model selector, shared renderer",
                 },
             },
             ensure_ascii=False,

@@ -23,6 +23,10 @@ _QUOTED_RE = re.compile(r"[`“\"]([^`”\"]{2,48})[`”\"]")
 _RECOLLECTION_PHRASE_RE = re.compile(
     r"(?:之前|以前|当时|那时候|记得|回忆起?|上次|曾经)" r"([^，。！？,!?\n]{2,24})"
 )
+_DISCUSSION_SOURCE_RE = re.compile(
+    r"(?:和|跟|向)\s*([A-Za-z][A-Za-z0-9_+.-]{1,})\s*(?:讨论|聊|说|问)",
+    re.IGNORECASE,
+)
 
 _MEMORY_TERMS = (
     "memory infra",
@@ -169,6 +173,8 @@ _META_TERMS = (
     "庄子",
     "宿命",
 )
+_NARRATIVE_CORE_TERMS = ("剧情", "人物", "角色", "小说", "情节", "卡文")
+_NARRATIVE_SUPPORT_TERMS = ("证据", "线索", "伏笔", "写作")
 _RECOLLECTION_TERMS = (
     "之前",
     "以前",
@@ -288,6 +294,11 @@ def plan_retrieval(text: str) -> RetrievalPlan:
     health_hits = _matched_terms(lowered, _HEALTH_TERMS)
     course_hits = _matched_terms(lowered, (*_COURSE_TERMS, *_COURSE_ENTITY_TERMS))
     meta_hits = _matched_terms(lowered, _META_TERMS)
+    narrative_core_hits = _matched_terms(lowered, _NARRATIVE_CORE_TERMS)
+    narrative_hits = [
+        *narrative_core_hits,
+        *_matched_terms(lowered, _NARRATIVE_SUPPORT_TERMS),
+    ]
     recollection_hits = _matched_terms(lowered, _RECOLLECTION_TERMS)
     quote_hits = _matched_terms(lowered, _QUOTE_TERMS)
 
@@ -327,13 +338,20 @@ def plan_retrieval(text: str) -> RetrievalPlan:
             "course/project state prefers recent goals, then reviewed memory, "
             "with chat history as episodic fallback"
         )
+    if narrative_core_hits:
+        domains.append("creative_writing")
+        terms.extend(narrative_hits)
+        required_terms.extend(narrative_hits)
+        sources.append(SOURCE_CHAT_HISTORY)
+        reasons.append(
+            "creative-writing questions search plot and character substance, "
+            "not the named discussion source"
+        )
     if recollection_hits and (not quote_hits or _explicit_quote_recall(cleaned)):
         domains.append("recollection")
-        terms.extend(recollection_hits)
-        terms.extend(
-            match.group(1).strip()
-            for match in _RECOLLECTION_PHRASE_RE.finditer(cleaned)
-        )
+        if not narrative_core_hits:
+            terms.extend(recollection_hits)
+        terms.extend(_recollection_subjects(cleaned))
         sources.append(SOURCE_CHAT_HISTORY)
         reasons.append("explicit recollection cue requests older conversation context")
     if meta_hits:
@@ -354,7 +372,14 @@ def plan_retrieval(text: str) -> RetrievalPlan:
 
     if SOURCE_CHAT_HISTORY in sources:
         terms.extend(_quoted_terms(cleaned))
-        optional_terms.extend(_latin_terms(cleaned))
+        discussion_sources = {
+            value.casefold() for value in _discussion_source_terms(cleaned)
+        }
+        optional_terms.extend(
+            term
+            for term in _latin_terms(cleaned)
+            if term.casefold() not in discussion_sources
+        )
         terms.extend(optional_terms)
     deduped_terms = _dedupe(terms)
     deduped_required_terms = _dedupe(required_terms)
@@ -402,6 +427,24 @@ def _matched_terms(lowered_text: str, candidates: tuple[str, ...]) -> list[str]:
 
 def _quoted_terms(text: str) -> list[str]:
     return [match.group(1).strip() for match in _QUOTED_RE.finditer(text)]
+
+
+def _discussion_source_terms(text: str) -> list[str]:
+    return [match.group(1) for match in _DISCUSSION_SOURCE_RE.finditer(text)]
+
+
+def _recollection_subjects(text: str) -> list[str]:
+    subjects = []
+    for match in _RECOLLECTION_PHRASE_RE.finditer(text):
+        subject = match.group(1).strip()
+        source_match = _DISCUSSION_SOURCE_RE.search(subject)
+        if source_match:
+            subject = subject[source_match.end():].strip()
+        if subject in {"这个", "那个", "这些", "那些"}:
+            continue
+        if subject:
+            subjects.append(subject)
+    return subjects
 
 
 def _explicit_quote_recall(text: str) -> bool:
