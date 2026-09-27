@@ -1,6 +1,7 @@
 """Run selection-only A/B against the sibling backend without network access."""
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import importlib
@@ -35,10 +36,61 @@ MANIFEST_CODE_PATHS = (
 )
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run a local, model-free context selection benchmark."
+    )
+    parser.add_argument(
+        "--seed-id",
+        action="append",
+        default=[],
+        help="Run only this original or rematched message ID; repeat as needed.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v11",
+        help="Output directory; must not already exist.",
+    )
+    return parser.parse_args()
+
+
+def _select_seeds(
+    seeds: list[dict[str, str]], seed_ids: list[str]
+) -> list[dict[str, str]]:
+    requested = {str(value).strip() for value in seed_ids if str(value).strip()}
+    if not requested:
+        return seeds
+    selected = [
+        seed
+        for seed in seeds
+        if requested
+        & {
+            str(seed.get("seed_message_id") or ""),
+            str(seed.get("message_id") or ""),
+        }
+    ]
+    matched = {
+        requested_id
+        for seed in selected
+        for requested_id in requested
+        if requested_id
+        in {
+            str(seed.get("seed_message_id") or ""),
+            str(seed.get("message_id") or ""),
+        }
+    }
+    missing = sorted(requested - matched)
+    if missing:
+        raise ValueError(f"Seed IDs were not found: {', '.join(missing)}")
+    return selected
+
+
 def main():
+    args = _parse_args()
     db = BACKEND / "chat_data/chat_search_prod.db"
     baseline = ROOT / "benchmark_outputs/context_selection_prod_router_planner_fixed_v2"
-    output = ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v11"
+    output = args.output.resolve()
     if output.exists():
         raise RuntimeError("Output exists; preserve prior runs by choosing a new directory")
     cfg = benchmark.load_config()
@@ -83,7 +135,9 @@ def main():
                   mother_memory_url="http://local-benchmark", mother_memory_api_key=None,
                   core_anchors_url="http://local-benchmark", core_anchors_api_key=None,
                   summary_enabled=False, daily_summary_enabled=False)
-    seeds = benchmark._load_seed_rows(baseline / "results.csv", db)
+    seeds = _select_seeds(
+        benchmark._load_seed_rows(baseline / "results.csv", db), args.seed_id
+    )
     original_client = httpx.Client
     original_search = context_builder._kmlog_search_messages
     output.mkdir(parents=True)
@@ -103,6 +157,7 @@ def main():
         "db": str(db), "db_sha256": fingerprint(db),
         "baseline_csv_sha256": fingerprint(baseline / "results.csv"),
         "baseline_zip_sha256": fingerprint(baseline.with_suffix(".zip")),
+        "selected_seed_ids": [seed["seed_message_id"] for seed in seeds],
         "config": public_cfg,
         "notes": ["Current curated snapshots; not historical as-of evidence",
                   "Mother lazy refresh disabled; use existing production DB sections",

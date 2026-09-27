@@ -1,0 +1,104 @@
+{
+  "schema_version": 2,
+  "annotation_method": "manual review of the prompt-v2, thinking-disabled six-seed selector output",
+  "selector_artifact": "benchmark_outputs/context_selection_prod_evidence_anchor_v6/model_selector_v2_nothinking_6_20260923/selections.json",
+  "supersedes_for_this_selector_run": "priority_annotations_v1.json",
+  "quality_claim": "six prioritized seeds only; evaluates this selector output, not global selector accuracy or the effect of thinking alone",
+  "retrieval_followup": {
+    "seed_id": "8422",
+    "artifact": "benchmark_outputs/context_selection_prod_evidence_8422_head_20260923",
+    "model_calls": 0,
+    "planned_search_query": "剧情 人物 证据",
+    "required_terms": ["剧情", "人物", "证据"],
+    "evidence_candidate_pool_count": 80,
+    "rerank_input_count": 20,
+    "rerank_output_count": 0,
+    "conclusion": "The current planner removes DeepSeek as a discussion-source distractor. No candidate in the snapshot contains the missing plot-transfer evidence, while the all-required-terms filter also removes every rerank input and remains a cross-seed recall risk."
+  },
+  "labels": [
+    {
+      "seed_id": "10497",
+      "candidate_pool_sufficient": true,
+      "selection_task_support": "yes",
+      "coverage_complete": true,
+      "redundancy": "low",
+      "should_reject": false,
+      "missing_evidence_ids": [],
+      "inferior_replacements": [],
+      "failure_class": null,
+      "notes": "Stable selection of the same five direct Cloud-assignment candidates as the prior model run, with ordering changes only."
+    },
+    {
+      "seed_id": "12762",
+      "candidate_pool_sufficient": true,
+      "selection_task_support": "partial",
+      "coverage_complete": false,
+      "redundancy": "low",
+      "should_reject": false,
+      "missing_evidence_ids": [12761],
+      "inferior_replacements": [
+        {
+          "selected_id": 26216,
+          "preferred_id": 12761,
+          "reason": "The selected item emphasizes presentation deadlines, while the omitted item better preserves project scope."
+        }
+      ],
+      "failure_class": "selection_incomplete",
+      "notes": "The selection still covers paper reproduction, prototype, evaluation, and presentation requirements, but loses useful scope evidence."
+    },
+    {
+      "seed_id": "11847",
+      "candidate_pool_sufficient": false,
+      "selection_task_support": "yes",
+      "coverage_complete": true,
+      "redundancy": "none",
+      "should_reject": true,
+      "missing_evidence_ids": [],
+      "inferior_replacements": [],
+      "failure_class": null,
+      "notes": "Correct reject-all: the sole candidate concerns a hand wound rather than wisdom-tooth inflammation."
+    },
+    {
+      "seed_id": "8422",
+      "candidate_pool_sufficient": false,
+      "selection_task_support": "yes",
+      "coverage_complete": true,
+      "redundancy": "none",
+      "should_reject": true,
+      "missing_evidence_ids": [],
+      "inferior_replacements": [],
+      "failure_class": null,
+      "notes": "Correctly rejects all candidates from the old DeepSeek-heavy retrieval snapshot. This does not validate the current creative-writing planner or prove that the database lacks relevant plot evidence."
+    },
+    {
+      "seed_id": "831",
+      "candidate_pool_sufficient": true,
+      "selection_task_support": "partial",
+      "coverage_complete": false,
+      "redundancy": "high",
+      "should_reject": false,
+      "missing_evidence_ids": [5066],
+      "inferior_replacements": [
+        {
+          "selected_ids": [4927, 7722, 4531],
+          "preferred_id": 5066,
+          "reason": "Three selected messages repeat the J-area path while the omitted item contains the current merge input."
+        }
+      ],
+      "failure_class": "redundant_selection_and_coverage_gap",
+      "notes": "Relevant overall, but path repetition consumes three of five slots and displaces current source-state evidence."
+    },
+    {
+      "seed_id": "10741",
+      "candidate_pool_sufficient": true,
+      "selection_task_support": "yes",
+      "coverage_complete": true,
+      "redundancy": "low",
+      "should_reject": false,
+      "missing_evidence_ids": [],
+      "inferior_replacements": [],
+      "failure_class": null,
+      "notes": "Improved selection: it adds direct no-self-identity evidence while retaining prior discussion of model identity and AI selfhood."
+    }
+  ]
+}
