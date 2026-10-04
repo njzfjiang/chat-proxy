@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "purpose": "Audit creative-writing all-required-terms filtering before changing retrieval behavior.",
+  "cases": [
+    {
+      "case_id": "exact_terms_control",
+      "query": "如何推进剧情，让人物拿到证据？",
+      "required_terms": ["剧情", "人物", "证据"],
+      "candidate": "这段剧情里，人物需要通过旧友拿到关键证据。",
+      "expected_accept": true,
+      "fixture_type": "control"
+    },
+    {
+      "case_id": "plot_transfer_synonyms",
+      "query": "如何推进剧情，让人物拿到证据？",
+      "required_terms": ["剧情", "人物", "证据"],
+      "candidate": "关颐得设法让叶长依拿到那封密信，否则下一幕无法成立。",
+      "expected_accept": true,
+      "fixture_type": "semantic_paraphrase"
+    },
+    {
+      "case_id": "clue_handoff_synonyms",
+      "query": "如何让某个角色取得关键证据？",
+      "required_terms": ["剧情", "人物", "证据"],
+      "candidate": "她必须把线索交到他手里，但直接见面会暴露两人的身份。",
+      "expected_accept": true,
+      "fixture_type": "semantic_paraphrase"
+    },
+    {
+      "case_id": "letter_discovery_real_style",
+      "query": "角色怎样发现推动情节的线索？",
+      "required_terms": ["剧情", "人物", "证据"],
+      "candidate": "关颐脑中最后一块拼图合上。她掰开叶长依僵硬的指节，展开一张被揉皱泛黄的信。",
+      "expected_accept": true,
+      "fixture_type": "corpus_style_paraphrase",
+      "source_note": "Adapted from future messages 7553/7554; this is not valid as-of evidence for seed 8422."
+    }
+  ]
+}

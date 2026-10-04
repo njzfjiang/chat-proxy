@@ -15,17 +15,27 @@ Keep these artifacts while the selector and planner changes are under review:
 - `context_selection_prod_evidence_sentence_v11`: current 32-seed local run.
   Compared with v8, only seed `8422` changed; it now returns no retrieved chat
   evidence.
+- `context_selection_prod_evidence_gold_v12_20261004`: 32-seed rerun with the
+  reviewed gold override. Historical chat candidate IDs are identical to v11
+  for all 32 seeds. Current Recent Goals results changed for six seeds because
+  that source is mutable, so v12 is not a frozen all-source comparison.
 - `context_selection_prod_evidence_anchor_v6`: common candidate source plus
   saved selector runs. Preserve this directory because model calls are not
   reproduced by local benchmark commands.
-- `context_selection_prod_evidence_8422_head_20260923`: model-free, single-seed
-  follow-up against current code. Its `analysis.md` records the planner query,
-  candidate counts, filtering reasons, and interpretation.
+- `context_selection_prod_evidence_8422_gold_v2_20261004`: smaller model-free,
+  single-seed verification of the same reviewed `8422` gold override.
 - `benchmarks/context_selection/annotations/priority_annotations_v1.json`:
   blind labels for the earlier six-seed A/B/C comparison.
 - `benchmarks/context_selection/annotations/priority_annotations_v2.json`:
   labels for the prompt-v2, thinking-disabled selector output. These labels do
   not isolate the thinking setting and do not estimate 32-seed accuracy.
+- `benchmarks/context_selection/annotations/candidate_change_annotations_v1.json`:
+  per-arm manual review for the 14 v11 seeds whose final candidate IDs changed.
+- `benchmarks/context_selection/annotations/gold_labels_v2.json`: reviewed gold
+  overrides applied by the local runner.
+- `docs/context-selection-evaluation-round2.md`: separate reports for the
+  six-seed selector, v11 32-seed retrieval, 14 changed-candidate review, and
+  required-term known-positive audit.
 
 ## Reproducing a local seed
 
@@ -51,6 +61,8 @@ These are reasonable cleanup candidates after the current review is complete:
   completed evidence A/B milestone.
 - `context_selection_prod_evidence_sentence_v7`, `_v9`, and `_v10`; retain
   `_v8` and `_v11` as the before/after pair.
+- `context_selection_prod_evidence_8422_head_20260923`; retain the reviewed
+  gold-v2 rerun after the older diagnostic report is no longer referenced.
 - Root archives for superseded runs, including
   `context_selection_prod_evidence_trace_v5.zip` and
   `context_selection_prod_evidence_sentence_v7.zip`, after confirming no

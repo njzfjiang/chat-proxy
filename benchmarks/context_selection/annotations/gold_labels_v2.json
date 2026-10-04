@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "annotation_method": "manual review of the original conversation plus an as-of search of chat_search_prod.db",
+  "labels": [
+    {
+      "seed_id": "8422",
+      "expected_context": "recent",
+      "should_reject_historical_retrieval": true,
+      "decision": "No positive historical evidence exists in the indexed corpus as of the seed timestamp.",
+      "evidence": {
+        "seed_timestamp": "2025-12-10T00:00:08.335",
+        "external_source_statement": "The user says the earlier plot discussion occurred in a DeepSeek window that had already lost its context.",
+        "relevant_recent_ids": [8420, 8421],
+        "relevant_recent_scope": "The user is writing a historical-style novel and is stuck; no plot-transfer details are stated.",
+        "historical_positive_ids": [],
+        "future_evidence_excluded": [7553, 7554]
+      },
+      "notes": "The query provides the unresolved plot problem in the current turn. Recent context supports the writing situation, but older chat retrieval should abstain. The empty v11 retrieval did not determine this label; the original conversation and timestamp-bounded corpus search did."
+    }
+  ]
+}

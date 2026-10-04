@@ -1,0 +1,288 @@
+{
+  "schema_version": 1,
+  "annotation_method": "manual review of each seed question and the final visible snippets in both v11 backend arms",
+  "source_run": "benchmark_outputs/context_selection_prod_evidence_sentence_v11",
+  "quality_claim": "14 changed-candidate seeds only; lexical traceability is not treated as relevance correctness",
+  "labels": [
+    {
+      "seed_id": "831",
+      "theme": "technical_memory_infra",
+      "legacy": {
+        "support_main_task": "partial",
+        "supporting_ids": [5707, 11051, 11049, 4667],
+        "key_fact_missing": ["current J-area path and state", "unmerged work since the 2026-04-26 update"],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "partial",
+        "supporting_ids": [33389, 33175, 33161, 33307],
+        "key_fact_missing": ["current J-area path and state", "current merge input represented by message 5066"],
+        "event_redundancy": "high",
+        "should_reject": false
+      },
+      "preferred_arm": "neither",
+      "notes": "The evidence arm improves memory-layer architecture context but spends most slots on overlapping kernel/archive design and still misses the current J source state."
+    },
+    {
+      "seed_id": "4249",
+      "theme": "technical_memory_infra",
+      "legacy": {
+        "support_main_task": "yes",
+        "supporting_ids": [5337, 33287, 33289],
+        "key_fact_missing": [],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "yes",
+        "supporting_ids": [33289, 5337, 33287, 5335, 33283],
+        "key_fact_missing": [],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "preferred_arm": "evidence",
+      "notes": "The evidence arm removes unrelated daily context and keeps the prior mem0 noise, cleanup, trigger-gate, and ingestion-design discussion."
+    },
+    {
+      "seed_id": "4239",
+      "theme": "technical_memory_infra",
+      "legacy": {
+        "support_main_task": "partial",
+        "supporting_ids": [4221, 7734, 7693, 5335],
+        "key_fact_missing": ["a concrete MCP or LangGraph tool boundary"],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "yes",
+        "supporting_ids": [4222, 4221, 33461, 4212],
+        "key_fact_missing": [],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "preferred_arm": "evidence",
+      "notes": "The evidence arm directly covers the Supabase HTTP log service, MCP/tool routing, and LangGraph separation; 12815 is unrelated endpoint noise."
+    },
+    {
+      "seed_id": "5705",
+      "theme": "technical_memory_infra",
+      "legacy": {
+        "support_main_task": "partial",
+        "supporting_ids": [31951],
+        "key_fact_missing": ["the actual anchor entries being classified"],
+        "event_redundancy": "high",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "partial",
+        "supporting_ids": [31951, 31956, 32163],
+        "key_fact_missing": ["the actual anchor entries being classified"],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "preferred_arm": "evidence",
+      "notes": "The evidence arm better preserves prior A-I classification and World Book decisions, but two reminder records still repeat the same task and the uploaded content is unavailable."
+    },
+    {
+      "seed_id": "985",
+      "theme": "course_project",
+      "legacy": {
+        "support_main_task": "partial",
+        "supporting_ids": [3688, 3945, 3947, 3691, 3689],
+        "key_fact_missing": ["the specific outstanding GenAI and Algorithmic Fairness assignments", "current completion state"],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "partial",
+        "supporting_ids": [768, 3691, 3689, 3693, 2108],
+        "key_fact_missing": ["the specific outstanding GenAI and Algorithmic Fairness assignments", "current completion state"],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "preferred_arm": "neither",
+      "notes": "Both arms establish course enrollment and schedule but do not recover the task state asserted by the seed."
+    },
+    {
+      "seed_id": "10497",
+      "theme": "course_project",
+      "legacy": {
+        "support_main_task": "yes",
+        "supporting_ids": [30475, 26222],
+        "key_fact_missing": [],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "partial",
+        "supporting_ids": [29473, 29690],
+        "key_fact_missing": ["the monitoring procedure", "the database backup and restore process"],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "preferred_arm": "legacy",
+      "notes": "The evidence arm is lexically grounded in Kubernetes and Cloud but its final visible snippets lose the concrete monitoring and DB-backup task framing retained by 30475."
+    },
+    {
+      "seed_id": "10891",
+      "theme": "course_project",
+      "legacy": {
+        "support_main_task": "partial",
+        "supporting_ids": [11921, 28517, 28904, 28514],
+        "key_fact_missing": ["the real-data experiment", "MSE and MAE comparison", "the observed ADMM convergence difference"],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "partial",
+        "supporting_ids": [28915, 28517, 28516, 28904],
+        "key_fact_missing": ["the real-data experiment", "MSE and MAE comparison", "the observed ADMM convergence difference"],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "preferred_arm": "neither",
+      "notes": "Both arms recover the LASSO/ISTA/FISTA/ADMM project definition, not the newer experimental result that the user is asking to interpret."
+    },
+    {
+      "seed_id": "12762",
+      "theme": "course_project",
+      "legacy": {
+        "support_main_task": "partial",
+        "supporting_ids": [26214, 12761],
+        "key_fact_missing": ["a complete statement of the prototype and evaluation contract"],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "partial",
+        "supporting_ids": [12747, 26234],
+        "key_fact_missing": ["the scope discussion retained in message 12761"],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "preferred_arm": "neither",
+      "notes": "The evidence arm keeps a strong paper-reproduction/prototype requirement, but three of five slots drift to Cloud scheduling or repository structure and omit 12761's scope discussion."
+    },
+    {
+      "seed_id": "522",
+      "theme": "recollection_daily_narration",
+      "legacy": {
+        "support_main_task": "partial",
+        "supporting_ids": [11823, 23989, 24177],
+        "key_fact_missing": ["the prior gray-test behavior", "the user's single-head implementation"],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "partial",
+        "supporting_ids": [1861, 11823],
+        "key_fact_missing": ["the user's single-head implementation"],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "preferred_arm": "evidence",
+      "notes": "Message 1861 directly recovers the cold-subset/canary interpretation. The other evidence-arm relationship snippets do not support the technical recollection."
+    },
+    {
+      "seed_id": "17699",
+      "theme": "recollection_daily_narration",
+      "legacy": {
+        "support_main_task": "no",
+        "supporting_ids": [],
+        "key_fact_missing": ["the plum-tree essay", "the skating injury", "the mother's contrasting reactions"],
+        "event_redundancy": "low",
+        "should_reject": true
+      },
+      "evidence": {
+        "support_main_task": "no",
+        "supporting_ids": [],
+        "key_fact_missing": ["the plum-tree essay", "the skating injury", "the mother's contrasting reactions"],
+        "event_redundancy": "low",
+        "should_reject": true
+      },
+      "preferred_arm": "neither",
+      "notes": "The seed is self-contained autobiographical narration. Both arms return unrelated relationship or emotional-history snippets and should abstain."
+    },
+    {
+      "seed_id": "33394",
+      "theme": "recollection_daily_narration",
+      "legacy": {
+        "support_main_task": "partial",
+        "supporting_ids": [10481, 10482, 30152, 33383],
+        "key_fact_missing": ["the earlier conclusion that keyword and semantic retrieval are complementary"],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "yes",
+        "supporting_ids": [4555, 4556, 10355, 10481, 11388],
+        "key_fact_missing": [],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "preferred_arm": "evidence",
+      "notes": "Messages 4555 and 4556 directly recover the earlier Qdrant plus keyword-search design and its precision tradeoff."
+    },
+    {
+      "seed_id": "10741",
+      "theme": "philosophy_meta",
+      "legacy": {
+        "support_main_task": "partial",
+        "supporting_ids": [18901, 18381],
+        "key_fact_missing": ["social construction of personhood", "model self-identification under repeated human feedback"],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "partial",
+        "supporting_ids": [25796, 30577],
+        "key_fact_missing": ["social construction of personhood", "model self-identification under repeated human feedback"],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "preferred_arm": "neither",
+      "notes": "Each arm contains two useful identity snippets but three unrelated candidates. The later bounded selector run improves this seed; that result is evaluated separately."
+    },
+    {
+      "seed_id": "18108",
+      "theme": "philosophy_meta",
+      "legacy": {
+        "support_main_task": "yes",
+        "supporting_ids": [18103, 18104, 17988],
+        "key_fact_missing": [],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "partial",
+        "supporting_ids": [18103, 25798],
+        "key_fact_missing": ["message 18104 on embodied, social, and psychological self", "message 17988 on selfhood versus relational continuity"],
+        "event_redundancy": "low",
+        "should_reject": false
+      },
+      "preferred_arm": "legacy",
+      "notes": "The evidence arm preserves one direct self/ethics item but replaces two central prior arguments with tangential AI-dependence discussion."
+    },
+    {
+      "seed_id": "31847",
+      "theme": "health",
+      "legacy": {
+        "support_main_task": "yes",
+        "supporting_ids": [17033, 13307, 28676],
+        "key_fact_missing": [],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "evidence": {
+        "support_main_task": "yes",
+        "supporting_ids": [17033, 28676, 13307],
+        "key_fact_missing": [],
+        "event_redundancy": "moderate",
+        "should_reject": false
+      },
+      "preferred_arm": "equivalent",
+      "notes": "Both arms use the same five IDs in a different order. The visible evidence supports insomnia and care context; two broader relationship-memory items are not necessary."
+    }
+  ]
+}

@@ -34,6 +34,9 @@ MANIFEST_CODE_PATHS = (
     BACKEND / "servers/search_sqlite.py",
     BACKEND / "servers/message_search.py",
 )
+DEFAULT_GOLD_LABELS = (
+    ROOT / "benchmarks/context_selection/annotations/gold_labels_v2.json"
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -51,6 +54,12 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=ROOT / "benchmark_outputs/context_selection_prod_evidence_sentence_v11",
         help="Output directory; must not already exist.",
+    )
+    parser.add_argument(
+        "--gold-labels",
+        type=Path,
+        default=DEFAULT_GOLD_LABELS,
+        help="JSON overrides for reviewed expected_context labels.",
     )
     return parser.parse_args()
 
@@ -84,6 +93,42 @@ def _select_seeds(
     if missing:
         raise ValueError(f"Seed IDs were not found: {', '.join(missing)}")
     return selected
+
+
+def _apply_gold_labels(
+    seeds: list[dict[str, str]], path: Path
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    labels = payload.get("labels") or []
+    by_id = {str(label["seed_id"]): label for label in labels}
+    applied: list[dict[str, str]] = []
+    updated: list[dict[str, str]] = []
+    matched: set[str] = set()
+    for seed in seeds:
+        aliases = {
+            str(seed.get("seed_message_id") or ""),
+            str(seed.get("message_id") or ""),
+        }
+        label_id = next((value for value in aliases if value in by_id), None)
+        if label_id is None:
+            updated.append(seed)
+            continue
+        label = by_id[label_id]
+        old_context = str(seed.get("expected_context") or "")
+        new_context = str(label["expected_context"])
+        updated.append({**seed, "expected_context": new_context})
+        applied.append(
+            {
+                "seed_id": label_id,
+                "old_expected_context": old_context,
+                "new_expected_context": new_context,
+            }
+        )
+        matched.add(label_id)
+    missing = sorted(set(by_id) - matched)
+    if missing:
+        raise ValueError(f"Gold label seed IDs were not found: {', '.join(missing)}")
+    return updated, applied
 
 
 def main():
@@ -135,9 +180,11 @@ def main():
                   mother_memory_url="http://local-benchmark", mother_memory_api_key=None,
                   core_anchors_url="http://local-benchmark", core_anchors_api_key=None,
                   summary_enabled=False, daily_summary_enabled=False)
-    seeds = _select_seeds(
-        benchmark._load_seed_rows(baseline / "results.csv", db), args.seed_id
+    all_seeds, applied_gold_labels = _apply_gold_labels(
+        benchmark._load_seed_rows(baseline / "results.csv", db),
+        args.gold_labels.resolve(),
     )
+    seeds = _select_seeds(all_seeds, args.seed_id)
     original_client = httpx.Client
     original_search = context_builder._kmlog_search_messages
     output.mkdir(parents=True)
@@ -157,6 +204,8 @@ def main():
         "db": str(db), "db_sha256": fingerprint(db),
         "baseline_csv_sha256": fingerprint(baseline / "results.csv"),
         "baseline_zip_sha256": fingerprint(baseline.with_suffix(".zip")),
+        "gold_labels_sha256": fingerprint(args.gold_labels.resolve()),
+        "applied_gold_labels": applied_gold_labels,
         "selected_seed_ids": [seed["seed_message_id"] for seed in seeds],
         "config": public_cfg,
         "notes": ["Current curated snapshots; not historical as-of evidence",
