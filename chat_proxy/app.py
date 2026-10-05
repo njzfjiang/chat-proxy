@@ -643,7 +643,12 @@ async def _handle_chat_body(
             cfg=cfg,
             store=store,
             request_id=request_id,
-            request_body=retrieval_shadow_body,
+            request_body={
+                **retrieval_shadow_body,
+                "as_of_timestamp": (
+                    retrieval_shadow_body.get("as_of_timestamp") or now
+                ),
+            },
             context_snapshot=context_snapshot,
         )
 

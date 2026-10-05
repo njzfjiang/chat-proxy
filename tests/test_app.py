@@ -2325,6 +2325,8 @@ async def test_retrieval_shadow_records_candidate_without_changing_active_prompt
 
     assert resp.status_code == 200
     assert len(search_payloads) == 2
+    assert "before" not in search_payloads[0]
+    assert search_payloads[1]["before"].endswith("Z") is False
     active_message = next(
         message["content"]
         for message in captured_body["messages"]

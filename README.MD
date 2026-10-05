@@ -401,7 +401,8 @@ Retrieval shadow mode is available on `POST /chat`. With
 configuration and is sent upstream without waiting for the shadow run. A
 bounded background task repeats only KMLog retrieval with router, query planner,
 evidence mode, and the candidate v2 renderer enabled. The candidate output is
-never added to the upstream messages. Keep
+never added to the upstream messages. Its search is cut off at the request
+start timestamp so the newly persisted user turn cannot retrieve itself. Keep
 `CHAT_PROXY_RETRIEVAL_RENDERER_V2_ENABLED=false` while collecting the initial
 legacy-versus-v2 comparison; enable it separately only for a later canary.
 

@@ -98,6 +98,8 @@ def _trace_projection(component: Mapping[str, Any] | None) -> dict[str, Any]:
         "error",
         "latency_ms",
         "temporal_scope",
+        "as_of_timestamp",
+        "before",
         "backend_candidate_count",
         "candidate_pool_ids",
         "backend_selected_ids",
