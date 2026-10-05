@@ -16,6 +16,19 @@
         "future_evidence_excluded": [7553, 7554]
       },
       "notes": "The query provides the unresolved plot problem in the current turn. Recent context supports the writing situation, but older chat retrieval should abstain. The empty v11 retrieval did not determine this label; the original conversation and timestamp-bounded corpus search did."
+    },
+    {
+      "seed_id": "17699",
+      "expected_context": "recent",
+      "should_reject_historical_retrieval": true,
+      "decision": "The turn is a self-contained autobiographical narration and does not request missing historical context.",
+      "evidence": {
+        "seed_timestamp": "2025-12-27T08:49:01.468",
+        "historical_positive_ids": [],
+        "previous_retrieved_ids": [16384, 8701, 21351, 16826, 23943],
+        "previous_result_assessment": "All five saved historical results are unrelated to the plum-tree essay, skating injury, and contrasting parental reactions stated in the current turn."
+      },
+      "notes": "Candidate-change review already marked both saved arms should_reject=true. The label changes because the source turn is complete and the retrieved evidence is unrelated, not because the new router returns an empty result."
     }
   ]
 }

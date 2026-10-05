@@ -36,6 +36,9 @@ Keep these artifacts while the selector and planner changes are under review:
 - `docs/context-selection-evaluation-round2.md`: separate reports for the
   six-seed selector, v11 32-seed retrieval, 14 changed-candidate review, and
   required-term known-positive audit.
+- `docs/context-selection-evaluation-round3.md`: concept-aware creative
+  filtering, `8422`/`17699` rejection controls, real-backend positive checks,
+  and the 32-seed model-free regression.
 
 ## Reproducing a local seed
 

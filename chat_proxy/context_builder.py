@@ -26,6 +26,10 @@ from .retrieval_evidence import (
     clip_kmlog_excerpt as _clip_kmlog_excerpt,
     render_kmlog_results as _render_kmlog_results,
 )
+from .retrieval_semantics import (
+    creative_evidence_expansion_terms,
+    match_creative_evidence,
+)
 from .retrieval_source_adapters import (
     recent_goal_candidate,
     reviewed_memory_candidate,
@@ -1219,10 +1223,10 @@ def _rerank_kmlog_results(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     required_terms = list(plan.required_terms)
     optional_terms = list(plan.optional_terms)
-    require_all_required_terms = "creative_writing" in set(
+    creative_writing = "creative_writing" in set(
         getattr(plan, "matched_domains", ())
     )
-    ranked: list[tuple[int, int, int, dict[str, Any]]] = []
+    ranked: list[tuple[int, int, int, int, dict[str, Any]]] = []
     seen_content: dict[str, Any] = {}
     synthetic_filtered = 0
     duplicate_filtered = 0
@@ -1257,18 +1261,33 @@ def _rerank_kmlog_results(
         missing_required_terms = [
             term for term in required_terms if term not in required_matches
         ]
-        if required_terms and (
-            not required_matches
-            or (require_all_required_terms and missing_required_terms)
-        ):
+        creative_match = None
+        if creative_writing:
+            creative_match = match_creative_evidence(
+                haystack,
+                required_terms=required_terms,
+                required_matches=required_matches,
+                matched_terms=body_terms,
+                keyword_match=_keyword_match,
+            )
+        reject_required_terms = required_terms and not required_matches
+        if creative_match is not None:
+            reject_required_terms = not creative_match["accepted"]
+        if reject_required_terms:
             entity_filtered += 1
             reason = {
                 "id": item.get("id"),
                 "reason": "missing_required_term",
                 "required_terms": required_terms,
             }
-            if require_all_required_terms:
+            if creative_match is not None:
                 reason["missing_required_terms"] = missing_required_terms
+                reason["creative_concept_matches"] = creative_match[
+                    "concept_matches"
+                ]
+                reason["missing_creative_concepts"] = creative_match[
+                    "missing_concepts"
+                ]
             filter_reasons.append(reason)
             continue
         # Only accepted candidates may reserve a deduplication key.
@@ -1290,13 +1309,22 @@ def _rerank_kmlog_results(
         ]
         item["planner_required_matches"] = required_matches
         item["planner_optional_matches"] = optional_matches
+        if creative_match is not None:
+            item["creative_match"] = creative_match
         entity_weight = max(
             (min(20, len(term)) for term in required_matches), default=0
         )
-        ranked.append((entity_weight, len(optional_matches), index, item))
-    ranked.sort(key=lambda value: (-value[0], -value[1], value[2]))
+        exact_match_tier = int(
+            creative_writing
+            and bool(required_terms)
+            and len(required_matches) == len(required_terms)
+        )
+        ranked.append(
+            (exact_match_tier, entity_weight, len(optional_matches), index, item)
+        )
+    ranked.sort(key=lambda value: (-value[0], -value[1], -value[2], value[3]))
     return (
-        [item for _, _, _, item in ranked[: max(0, limit)]],
+        [item for _, _, _, _, item in ranked[: max(0, limit)]],
         {
             "synthetic_filtered": synthetic_filtered,
             "duplicate_filtered": duplicate_filtered,
@@ -1380,7 +1408,12 @@ def _kmlog_search_messages(
         if candidate_results_enabled:
             payload["include_candidate_results"] = True
         if query_planner_enabled:
-            payload["evidence_terms"] = list(plan.required_terms) + list(plan.optional_terms)
+            if "creative_writing" in set(plan.matched_domains):
+                payload["evidence_terms"] = creative_evidence_expansion_terms()
+            else:
+                payload["evidence_terms"] = list(plan.required_terms) + list(
+                    plan.optional_terms
+                )
     as_of_timestamp = str(body.get("as_of_timestamp") or "").strip()
     if as_of_timestamp:
         payload["before"] = _exclusive_before_timestamp(as_of_timestamp)

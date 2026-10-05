@@ -202,7 +202,7 @@ def test_recollection_keeps_topic_named_after_discussion_source():
     assert "deepseek" not in plan.search_query.casefold()
 
 
-def test_creative_writing_reranker_requires_all_explicit_story_terms():
+def test_creative_writing_reranker_keeps_a_conservative_coherence_gate():
     plan = plan_retrieval("推进剧情时，人物怎么拿到证据")
     rows = [
         {"id": 1, "content_preview": "剧情里出现了一份证据"},
@@ -214,8 +214,174 @@ def test_creative_writing_reranker_requires_all_explicit_story_terms():
 
     assert [item["id"] for item in ranked] == [3]
     assert stats["entity_filtered"] == 2
-    assert stats["filter_reasons"][0]["missing_required_terms"] == ["人物"]
-    assert stats["filter_reasons"][1]["missing_required_terms"] == ["证据"]
+    assert stats["filter_reasons"][0]["missing_creative_concepts"] == [
+        "transfer"
+    ]
+    assert stats["filter_reasons"][1]["missing_creative_concepts"] == [
+        "evidence",
+        "transfer",
+    ]
+
+
+def test_creative_writing_reranker_accepts_evidence_paraphrases():
+    plan = plan_retrieval("推进剧情时，人物怎么拿到证据")
+    rows = [
+        {"id": 1, "content_preview": "关颐得设法让叶长依拿到那封密信，否则下一幕无法成立。"},
+        {"id": 2, "content_preview": "她必须把线索交到他手里，但直接见面会暴露身份。"},
+        {"id": 3, "content_preview": "关颐脑中最后一块拼图合上。她掰开指节，展开泛黄的信。"},
+    ]
+
+    ranked, stats = _rerank_kmlog_results(rows, plan=plan, limit=5)
+
+    assert [item["id"] for item in ranked] == [1, 2, 3]
+    assert stats["entity_filtered"] == 0
+    assert all(
+        item["creative_match"]["acceptance"] == "semantic_evidence_coherence"
+        for item in ranked
+    )
+
+
+def test_long_self_contained_recollection_narration_skips_history():
+    plan = plan_retrieval(
+        "之前家里的树在一场雪里倒了，我拿它写过作文。"
+        "那时候我还学过滑冰，总是站不起来，家里人坐在旁边笑。"
+        "后来回头看，这两件事都挺有意思，也让我发现大家表达关心的方式很不一样。"
+        "现在讲起来已经没有当时那么难受，只觉得是很久以前的一段生活记录。"
+        "作文里写了树，现实里讲的是滑冰，两个片段并没有需要继续追查的前情。"
+        "我只是忽然想起这些细节，所以顺手把它们完整地讲出来。"
+    )
+
+    assert "recollection" not in plan.matched_domains
+    assert SOURCE_CHAT_HISTORY not in plan.sources
+
+
+def test_creative_evidence_survives_backend_filter_and_visible_budget(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from chat_proxy import context_builder
+    from chat_proxy.config import ProxyConfig
+    from chat_proxy.retrieval_semantics import CREATIVE_EVIDENCE_EXPANSION_TERMS
+
+    rows = [
+        {
+            "id": 200,
+            "evidence_version": 1,
+            "content_hash": "negative",
+            "matched_excerpt": "今天只是在闲聊角色外观，没有任何可用线索。",
+            "body_matched_terms": ["角色"],
+        },
+        {
+            "id": 101,
+            "evidence_version": 1,
+            "content_hash": "positive-1",
+            "matched_excerpt": "关颐得设法让叶长依拿到那封密信，否则下一幕无法成立。",
+            "body_matched_terms": ["下一幕", "密信"],
+        },
+        {
+            "id": 102,
+            "evidence_version": 1,
+            "content_hash": "positive-2",
+            "matched_excerpt": "她必须把线索交到他手里，但直接见面会暴露身份。",
+            "body_matched_terms": ["线索"],
+        },
+        {
+            "id": 103,
+            "evidence_version": 1,
+            "content_hash": "positive-3",
+            "matched_excerpt": "关颐脑中最后一块拼图合上。她掰开指节，展开泛黄的信。",
+            "body_matched_terms": ["拼图"],
+        },
+    ]
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, *args, **kwargs):
+            captured.update(kwargs["json"])
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {
+                    "results": rows,
+                    "evidence_version": 1,
+                    "candidate_ids": [item["id"] for item in rows],
+                    "selected_ids": [item["id"] for item in rows],
+                    "candidate_count": len(rows),
+                },
+            )
+
+    monkeypatch.setattr(context_builder.httpx, "Client", FakeClient)
+    cfg = ProxyConfig(
+        upstream_base="http://disabled",
+        db_path=tmp_path / "unused.db",
+        retrieval_enabled=True,
+        retrieval_inject_enabled=True,
+        retrieval_router_enabled=True,
+        retrieval_query_planner_enabled=True,
+        kmlog_search_url="http://test",
+        kmlog_search_limit=5,
+        kmlog_search_chars_total=1200,
+    )
+
+    messages, snapshot = context_builder._kmlog_search_messages(
+        body={}, cfg=cfg, query="推进剧情时，人物怎么拿到证据"
+    )
+
+    assert captured["evidence_terms"] == list(CREATIVE_EVIDENCE_EXPANSION_TERMS)
+    assert snapshot["backend_result_ids"] == [200, 101, 102, 103]
+    assert snapshot["rerank_input_ids"] == [200, 101, 102, 103]
+    assert snapshot["rerank_output_ids"] == [101, 102, 103]
+    assert snapshot["final_injected_ids"] == [101, 102, 103]
+    assert snapshot["chars"] <= 1200
+    assert len(messages) == 1
+    assert all(
+        marker in messages[0]["content"] for marker in ("密信", "线索", "拼图")
+    )
+
+
+def test_self_contained_recollection_stops_before_backend(tmp_path, monkeypatch):
+    from chat_proxy import context_builder
+    from chat_proxy.config import ProxyConfig
+
+    class UnexpectedClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("self-contained narration must not call the backend")
+
+    monkeypatch.setattr(context_builder.httpx, "Client", UnexpectedClient)
+    cfg = ProxyConfig(
+        upstream_base="http://disabled",
+        db_path=tmp_path / "unused.db",
+        retrieval_enabled=True,
+        retrieval_inject_enabled=True,
+        retrieval_router_enabled=True,
+        retrieval_query_planner_enabled=True,
+        kmlog_search_url="http://test",
+    )
+    query = (
+        "之前家里的树在一场雪里倒了，我拿它写过作文。"
+        "那时候我还学过滑冰，总是站不起来，家里人坐在旁边笑。"
+        "后来回头看，这两件事都挺有意思，也让我发现大家表达关心的方式很不一样。"
+        "现在讲起来已经没有当时那么难受，只觉得是很久以前的一段生活记录。"
+        "作文里写了树，现实里讲的是滑冰，两个片段并没有需要继续追查的前情。"
+        "我只是忽然想起这些细节，所以顺手把它们完整地讲出来。"
+    )
+
+    messages, snapshot = context_builder._kmlog_search_messages(
+        body={}, cfg=cfg, query=query
+    )
+
+    assert messages == []
+    assert snapshot["skipped_reason"] == "router did not select chat_history_search"
+    assert snapshot.get("final_injected_ids", []) == []
 
 
 def test_router_mode_can_exclude_constant_worldbook_entries():

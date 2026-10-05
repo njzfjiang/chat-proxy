@@ -54,6 +54,7 @@ def audit_cases(path: Path = CASES) -> dict[str, object]:
                 "matches_expectation": observed_accept
                 == bool(case["expected_accept"]),
                 "filter_reason": filter_reason,
+                "creative_match": ranked[0].get("creative_match") if ranked else None,
             }
         )
     return {
@@ -62,6 +63,7 @@ def audit_cases(path: Path = CASES) -> dict[str, object]:
             item["expected_accept"] and not item["observed_accept"]
             for item in results
         ),
+        "mismatch_count": sum(not item["matches_expectation"] for item in results),
         "results": results,
     }
 

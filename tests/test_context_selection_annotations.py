@@ -15,7 +15,12 @@ def test_reviewed_gold_label_overrides_8422_without_mutating_input():
             "seed_message_id": "8422",
             "message_id": "8422",
             "expected_context": "recent+episodic",
-        }
+        },
+        {
+            "seed_message_id": "17699",
+            "message_id": "17699",
+            "expected_context": "episodic",
+        },
     ]
 
     updated, applied = _apply_gold_labels(
@@ -24,12 +29,19 @@ def test_reviewed_gold_label_overrides_8422_without_mutating_input():
 
     assert seeds[0]["expected_context"] == "recent+episodic"
     assert updated[0]["expected_context"] == "recent"
+    assert seeds[1]["expected_context"] == "episodic"
+    assert updated[1]["expected_context"] == "recent"
     assert applied == [
         {
             "seed_id": "8422",
             "old_expected_context": "recent+episodic",
             "new_expected_context": "recent",
-        }
+        },
+        {
+            "seed_id": "17699",
+            "old_expected_context": "episodic",
+            "new_expected_context": "recent",
+        },
     ]
 
 
@@ -58,13 +70,15 @@ def test_candidate_change_annotations_cover_the_saved_14_seed_delta():
     }
 
 
-def test_required_term_audit_exposes_three_paraphrase_false_negatives():
+def test_required_term_audit_accepts_known_positive_paraphrases():
     result = audit_cases()
 
     assert result["case_count"] == 4
-    assert result["false_negative_count"] == 3
+    assert result["false_negative_count"] == 0
+    assert result["mismatch_count"] == 0
     assert result["results"][0]["case_id"] == "exact_terms_control"
-    assert result["results"][0]["observed_accept"] is True
+    assert all(item["observed_accept"] is True for item in result["results"])
     assert all(
-        item["observed_accept"] is False for item in result["results"][1:]
+        item["creative_match"]["acceptance"] == "semantic_evidence_coherence"
+        for item in result["results"][1:]
     )

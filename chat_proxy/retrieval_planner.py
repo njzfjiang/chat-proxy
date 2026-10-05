@@ -197,6 +197,17 @@ _SOCIAL_TERMS = (
     "亲亲",
     "蹭蹭",
 )
+_EXPLICIT_RECOLLECTION_REQUEST_TERMS = (
+    "还记得",
+    "记得吗",
+    "记不记得",
+    "回忆一下",
+    "帮我找",
+    "之前聊过",
+    "以前聊过",
+    "之前讨论",
+    "以前讨论",
+)
 _LATIN_STOPWORDS = {
     "about",
     "after",
@@ -347,7 +358,12 @@ def plan_retrieval(text: str) -> RetrievalPlan:
             "creative-writing questions search plot and character substance, "
             "not the named discussion source"
         )
-    if recollection_hits and (not quote_hits or _explicit_quote_recall(cleaned)):
+    self_contained_narration = _looks_like_self_contained_narration(cleaned)
+    if (
+        recollection_hits
+        and (not quote_hits or _explicit_quote_recall(cleaned))
+        and (domains or not self_contained_narration)
+    ):
         domains.append("recollection")
         if not narrative_core_hits:
             terms.extend(recollection_hits)
@@ -409,6 +425,13 @@ def _clean_text(value: str) -> str:
     text = _ATTACHMENT_RE.sub(" ", text)
     text = re.sub(r"哈{2,}|嘿{2,}|(?:233){1,}\d*", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _looks_like_self_contained_narration(text: str) -> bool:
+    lowered = text.casefold()
+    if len(text) < 160 or "?" in text or "？" in text:
+        return False
+    return not any(term in lowered for term in _EXPLICIT_RECOLLECTION_REQUEST_TERMS)
 
 
 def _matched_terms(lowered_text: str, candidates: tuple[str, ...]) -> list[str]:
