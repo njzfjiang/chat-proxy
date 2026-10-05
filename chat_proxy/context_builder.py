@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -1350,6 +1351,11 @@ def _kmlog_search_messages(
         "retrieval_query_planner_enabled",
         cfg.retrieval_query_planner_enabled,
     )
+    renderer_v2_enabled = _body_bool(
+        body,
+        "retrieval_renderer_v2_enabled",
+        cfg.retrieval_renderer_v2_enabled,
+    )
     snapshot: dict[str, Any] = {
         "name": "kmlog_search",
         "trace_version": 2,
@@ -1357,6 +1363,7 @@ def _kmlog_search_messages(
         "inject": inject,
         "router_enabled": router_enabled,
         "query_planner_enabled": query_planner_enabled,
+        "renderer": "candidate_v2" if renderer_v2_enabled else "legacy",
         "message_count": 0,
         "items": [],
         "chars": 0,
@@ -1424,6 +1431,7 @@ def _kmlog_search_messages(
     headers = {"content-type": "application/json"}
     if cfg.kmlog_search_api_key:
         headers["x-api-key"] = cfg.kmlog_search_api_key
+    search_started = time.monotonic()
     try:
         with httpx.Client(timeout=cfg.kmlog_search_timeout_seconds) as client:
             response = client.post(
@@ -1434,8 +1442,10 @@ def _kmlog_search_messages(
             response.raise_for_status()
             data = response.json()
     except Exception as exc:
+        snapshot["latency_ms"] = round((time.monotonic() - search_started) * 1000)
         snapshot["error"] = str(exc)
         return [], snapshot
+    snapshot["latency_ms"] = round((time.monotonic() - search_started) * 1000)
 
     results = data.get("results") if isinstance(data, dict) else None
     if not isinstance(results, list):
@@ -1485,7 +1495,10 @@ def _kmlog_search_messages(
     snapshot["selected_before_budget_ids"] = [item.get("id") for item in results if isinstance(item, Mapping)]
 
     content, render_stats = _render_kmlog_results(
-        results, total_chars=cfg.kmlog_search_chars_total
+        results,
+        total_chars=cfg.kmlog_search_chars_total,
+        strict_total_budget=renderer_v2_enabled,
+        creative_priority=renderer_v2_enabled,
     )
     snapshot.update(
         {

@@ -5,9 +5,78 @@ from typing import Any, Mapping
 
 
 def render_kmlog_results(
-    results: list[Any], *, total_chars: int
+    results: list[Any],
+    *,
+    total_chars: int,
+    strict_total_budget: bool = True,
+    creative_priority: bool = True,
 ) -> tuple[str, dict[str, Any]]:
-    remaining_chars = max(0, total_chars)
+    configured_budget = max(0, total_chars)
+    if not strict_total_budget:
+        content, stats = _render_kmlog_results_once(
+            results,
+            excerpt_chars=configured_budget,
+            creative_priority=creative_priority,
+        )
+        stats.update(
+            {
+                "budget_total_chars": configured_budget,
+                "budget_excerpt_chars": configured_budget,
+                "budget_wrapper_chars": max(
+                    0, len(content) - int(stats.get("budget_used_chars") or 0)
+                ),
+                "chars": len(content),
+            }
+        )
+        return content, stats
+
+    excerpt_budget = configured_budget
+    content, stats = _render_kmlog_results_once(
+        results,
+        excerpt_chars=excerpt_budget,
+        creative_priority=creative_priority,
+    )
+    if len(content) > configured_budget:
+        low = 0
+        high = max(0, configured_budget - 1)
+        best = _render_kmlog_results_once(
+            results,
+            excerpt_chars=0,
+            creative_priority=creative_priority,
+        )
+        best_budget = 0
+        while low <= high:
+            candidate_budget = (low + high) // 2
+            candidate = _render_kmlog_results_once(
+                results,
+                excerpt_chars=candidate_budget,
+                creative_priority=creative_priority,
+            )
+            if len(candidate[0]) <= configured_budget:
+                best = candidate
+                best_budget = candidate_budget
+                low = candidate_budget + 1
+            else:
+                high = candidate_budget - 1
+        content, stats = best
+        excerpt_budget = best_budget
+    stats.update(
+        {
+            "budget_total_chars": configured_budget,
+            "budget_excerpt_chars": excerpt_budget,
+            "budget_wrapper_chars": max(
+                0, len(content) - int(stats.get("budget_used_chars") or 0)
+            ),
+            "chars": len(content),
+        }
+    )
+    return content, stats
+
+
+def _render_kmlog_results_once(
+    results: list[Any], *, excerpt_chars: int, creative_priority: bool
+) -> tuple[str, dict[str, Any]]:
+    remaining_chars = max(0, excerpt_chars)
     evidence_item_budget = remaining_chars // max(1, len(results))
     budget_dropped: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
@@ -35,7 +104,11 @@ def render_kmlog_results(
         if raw_item.get("evidence_version") == 1:
             remaining_slots = max(1, len(results) - result_index)
             item_budget = remaining_chars // remaining_slots
-            clipped = clip_kmlog_evidence(raw_item, item_budget)
+            clipped = clip_kmlog_evidence(
+                raw_item,
+                item_budget,
+                creative_priority=creative_priority,
+            )
         else:
             clipped = preview[:item_budget].rstrip()
         if not clipped:
@@ -49,6 +122,9 @@ def render_kmlog_results(
         timestamp = str(raw_item.get("timestamp") or "").strip()
         body_matched_terms = list(raw_item.get("body_matched_terms", []))
         required_matches = list(raw_item.get("planner_required_matches", []))
+        creative_priority_terms = (
+            _creative_priority_terms(raw_item) if creative_priority else []
+        )
         visible_matched_terms = [
             term for term in body_matched_terms if contains_kmlog_term(clipped, term)
         ]
@@ -57,6 +133,11 @@ def render_kmlog_results(
         ]
         missing_required_terms = [
             term for term in required_matches if term not in visible_required_terms
+        ]
+        visible_creative_terms = [
+            term
+            for term in creative_priority_terms
+            if contains_kmlog_term(clipped, term)
         ]
         blocks.append(
             "\n".join(
@@ -92,6 +173,14 @@ def render_kmlog_results(
                 "planner_optional_matches": raw_item.get(
                     "planner_optional_matches", []
                 ),
+                "creative_match": raw_item.get("creative_match"),
+                "creative_priority_terms": creative_priority_terms,
+                "visible_creative_terms": visible_creative_terms,
+                "missing_creative_terms": [
+                    term
+                    for term in creative_priority_terms
+                    if term not in visible_creative_terms
+                ],
                 "chars": len(clipped),
                 "source_chars": len(preview),
                 "budget_limit": item_budget,
@@ -115,7 +204,7 @@ def render_kmlog_results(
         "items": items,
         "result_count": len(items),
         "selected_after_budget_ids": [item["id"] for item in items],
-        "budget_total_chars": max(0, total_chars),
+        "budget_total_chars": max(0, excerpt_chars),
         "budget_per_evidence_item_chars": evidence_item_budget,
         "budget_strategy": "remaining_equal_share",
         "budget_dropped": budget_dropped,
@@ -136,7 +225,12 @@ def clip_kmlog_excerpt(preview: str, budget: int) -> str:
     return preview[: max(0, budget)].rstrip()
 
 
-def clip_kmlog_evidence(item: Mapping[str, Any], budget: int) -> str:
+def clip_kmlog_evidence(
+    item: Mapping[str, Any],
+    budget: int,
+    *,
+    creative_priority: bool = True,
+) -> str:
     text = str(
         item.get("matched_excerpt") or item.get("content_preview") or ""
     ).strip()
@@ -148,9 +242,17 @@ def clip_kmlog_evidence(item: Mapping[str, Any], budget: int) -> str:
     required_terms = _dedupe_casefolded(
         list(item.get("planner_required_matches") or [])
     )
-    priority_terms = required_terms or _dedupe_casefolded(
-        list(item.get("body_matched_terms") or [])
-    )
+    creative_terms = _creative_priority_terms(item) if creative_priority else []
+    if creative_terms:
+        priority_terms = _dedupe_casefolded(
+            creative_terms
+            + required_terms
+            + list(item.get("body_matched_terms") or [])
+        )
+    else:
+        priority_terms = required_terms or _dedupe_casefolded(
+            list(item.get("body_matched_terms") or [])
+        )
     anchors = []
     for term in priority_terms:
         span = find_kmlog_term(text, term)
@@ -284,3 +386,18 @@ def _dedupe_casefolded(values: list[Any]) -> list[str]:
             seen.add(key)
             result.append(term)
     return result
+
+
+def _creative_priority_terms(item: Mapping[str, Any]) -> list[str]:
+    match = item.get("creative_match")
+    if not isinstance(match, Mapping):
+        return []
+    if match.get("acceptance") != "semantic_evidence_coherence":
+        return []
+    concepts = match.get("concept_matches")
+    if not isinstance(concepts, Mapping):
+        return []
+    return _dedupe_casefolded(
+        list(concepts.get("evidence") or [])
+        + list(concepts.get("transfer") or [])
+    )

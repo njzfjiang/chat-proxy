@@ -546,9 +546,9 @@ def test_evidence_items_share_the_total_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(context_builder.httpx, "Client", FakeClient)
     cfg = ProxyConfig(upstream_base="http://disabled", db_path=tmp_path / "unused.db",
                       retrieval_enabled=True, kmlog_search_url="http://test",
-                      kmlog_search_chars_total=1200)
+                      kmlog_search_chars_total=1200,
+                      retrieval_renderer_v2_enabled=True)
     _, snapshot = context_builder._kmlog_search_messages(body={}, cfg=cfg, query="FISTA")
-    assert [i["chars"] for i in snapshot["items"]] == [240] * 5
     assert snapshot["selected_after_budget_ids"] == list(range(5))
     assert snapshot["trace_version"] == 2
     assert snapshot["temporal_scope"] == "current_index"
@@ -563,19 +563,19 @@ def test_evidence_items_share_the_total_budget(tmp_path, monkeypatch):
     assert snapshot["rerank_output_ids"] == list(range(5))
     assert snapshot["cutoff_filtered_ids"] == []
     assert snapshot["budget_total_chars"] == 1200
-    assert snapshot["budget_per_evidence_item_chars"] == 240
-    assert snapshot["budget_used_chars"] == 1200
+    assert snapshot["budget_excerpt_chars"] < 1200
+    assert snapshot["budget_used_chars"] + snapshot["budget_wrapper_chars"] <= 1200
+    assert snapshot["chars"] <= 1200
     assert snapshot["budget_dropped"] == []
     assert snapshot["final_injected_ids"] == []
     assert all(item["source_chars"] == 720 for item in snapshot["items"])
-    assert all(item["budget_limit"] == 240 for item in snapshot["items"])
     assert all(item["truncated"] is True for item in snapshot["items"])
     assert all(item["visible_matched_terms"] == [] for item in snapshot["items"])
     assert snapshot["required_terms_visible_count"] == 0
     assert snapshot["required_terms_missing_count"] == 0
 
 
-def test_evidence_renderer_reallocates_unused_item_budget():
+def test_evidence_renderer_reallocates_unused_item_budget_within_total():
     from chat_proxy.retrieval_evidence import render_kmlog_results
 
     rows = [
@@ -583,7 +583,53 @@ def test_evidence_renderer_reallocates_unused_item_budget():
         {"id": 2, "evidence_version": 1, "matched_excerpt": "x" * 200},
     ]
 
-    _, snapshot = render_kmlog_results(rows, total_chars=100)
+    content, snapshot = render_kmlog_results(rows, total_chars=100)
 
-    assert [item["chars"] for item in snapshot["items"]] == [10, 90]
+    assert snapshot["selected_after_budget_ids"] == [1]
+    assert snapshot["items"][0]["chars"] == 10
+    assert snapshot["budget_dropped"] == [
+        {"id": 2, "reason": "below_minimum_fragment"}
+    ]
+    assert len(content) <= 100
+    assert snapshot["budget_used_chars"] + snapshot["budget_wrapper_chars"] <= 100
     assert snapshot["budget_strategy"] == "remaining_equal_share"
+
+
+def test_semantic_renderer_prioritizes_evidence_and_action_anchors():
+    from chat_proxy.retrieval_evidence import render_kmlog_results
+
+    rows = [
+        {
+            "id": 7553,
+            "evidence_version": 1,
+            "matched_excerpt": (
+                "关颐脑中最后一块拼图合上。她掰开僵硬的指节，展开泛黄的信。"
+                + "无关分析" * 80
+                + "最后才泛泛提到人物塑造。"
+            ),
+            "body_matched_terms": ["拼图", "人物"],
+            "planner_required_matches": ["人物"],
+            "creative_match": {
+                "accepted": True,
+                "acceptance": "semantic_evidence_coherence",
+                "concept_matches": {
+                    "narrative": [],
+                    "evidence": ["拼图"],
+                    "transfer": ["掰开", "展开"],
+                },
+                "missing_concepts": [],
+            },
+        }
+    ]
+
+    content, snapshot = render_kmlog_results(rows, total_chars=120)
+
+    assert "拼图" in content
+    assert "掰开" in content
+    assert "展开" in content
+    assert snapshot["items"][0]["visible_creative_terms"] == [
+        "拼图",
+        "掰开",
+        "展开",
+    ]
+    assert snapshot["items"][0]["missing_creative_terms"] == []

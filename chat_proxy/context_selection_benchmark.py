@@ -186,6 +186,7 @@ async def _run_benchmark(
             retrieval_inject_enabled=False,
             retrieval_router_enabled=router_enabled,
             retrieval_query_planner_enabled=query_planner_enabled,
+            retrieval_renderer_v2_enabled=True,
         )
         app = create_app(cfg)
         results = []

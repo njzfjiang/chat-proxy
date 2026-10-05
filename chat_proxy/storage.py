@@ -483,6 +483,39 @@ WHERE request_id = ?
                 ],
             )
 
+    def merge_request_metadata(
+        self,
+        *,
+        request_id: str,
+        now: str,
+        patch: Mapping[str, Any],
+    ) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT metadata_json FROM requests WHERE request_id = ?",
+                [request_id],
+            ).fetchone()
+            if row is None:
+                return False
+            metadata: dict[str, Any] = {}
+            raw = row["metadata_json"]
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    decoded = json.loads(raw)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, dict):
+                    metadata = decoded
+            metadata.update(dict(patch))
+            conn.execute(
+                """
+UPDATE requests SET updated_at = ?, metadata_json = ?
+WHERE request_id = ?
+""",
+                [now, _json(metadata), request_id],
+            )
+        return True
+
     def insert_message(
         self,
         *,

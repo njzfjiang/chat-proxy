@@ -377,6 +377,9 @@ CHAT_PROXY_RETRIEVAL_ENABLED=true
 CHAT_PROXY_RETRIEVAL_INJECT_ENABLED=false
 CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED=false
 CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED=false
+CHAT_PROXY_RETRIEVAL_RENDERER_V2_ENABLED=false
+CHAT_PROXY_RETRIEVAL_SHADOW_ENABLED=false
+CHAT_PROXY_RETRIEVAL_SHADOW_MAX_TASKS=2
 CHAT_PROXY_MOTHER_MEMORY_ENABLED=false
 CHAT_PROXY_MOTHER_MEMORY_INJECT_ENABLED=false
 CHAT_PROXY_MOTHER_MEMORY_URL=http://127.0.0.1:8013
@@ -392,6 +395,21 @@ CHAT_PROXY_KMLOG_SEARCH_CHARS_TOTAL=1200
 The web UI has separate `Retrieve kmlog` and `Inject` toggles. Retrieval results
 always appear in the Debug trace when retrieval is enabled; they are only added
 to the model context when `Inject` is also enabled.
+
+Retrieval shadow mode is available on `POST /chat`. With
+`CHAT_PROXY_RETRIEVAL_SHADOW_ENABLED=true`, the normal request keeps its active
+configuration and is sent upstream without waiting for the shadow run. A
+bounded background task repeats only KMLog retrieval with router, query planner,
+evidence mode, and the candidate v2 renderer enabled. The candidate output is
+never added to the upstream messages. Keep
+`CHAT_PROXY_RETRIEVAL_RENDERER_V2_ENABLED=false` while collecting the initial
+legacy-versus-v2 comparison; enable it separately only for a later canary.
+
+Shadow results are stored on the same request under
+`metadata.retrieval_shadow`. The trace includes backend and rerank IDs, final
+visible excerpts with source roles, active/candidate character counts and
+latency, errors, and an empty manual-review record. If the configured task cap
+is reached, the request records `status=dropped` instead of delaying chat.
 
 The optional retrieval router is deterministic and disabled by default. It
 selects candidate sources (`recent`, J recent goals, reviewed memory, chat

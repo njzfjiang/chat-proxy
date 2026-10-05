@@ -50,7 +50,7 @@ def test_selector_abc_uses_common_pool_and_shared_render_budget():
         selector_row=selector_row,
         selection_limit=1,
         max_candidate_chars=600,
-        total_chars=30,
+        total_chars=120,
     )
 
     groups = result["groups"]
@@ -59,8 +59,8 @@ def test_selector_abc_uses_common_pool_and_shared_render_budget():
     assert groups["c_common_pool_model"]["selected_after_budget_ids"] == [2]
     assert groups["b_common_pool_rule"]["input_ids"] == [1, 2]
     assert groups["c_common_pool_model"]["input_ids"] == [1, 2]
-    assert groups["b_common_pool_rule"]["rendered_body_chars"] <= 30
-    assert groups["c_common_pool_model"]["rendered_body_chars"] <= 30
+    assert groups["b_common_pool_rule"]["rendered_body_chars"] <= 120
+    assert groups["c_common_pool_model"]["rendered_body_chars"] <= 120
 
 
 def test_selector_abc_rule_and_model_use_the_same_visible_candidate_body():

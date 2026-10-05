@@ -31,6 +31,9 @@ class ProxyConfig:
     retrieval_inject_enabled: bool = False
     retrieval_router_enabled: bool = False
     retrieval_query_planner_enabled: bool = False
+    retrieval_renderer_v2_enabled: bool = False
+    retrieval_shadow_enabled: bool = False
+    retrieval_shadow_max_tasks: int = 2
     recent_goals_enabled: bool = False
     recent_goals_url: str | None = None
     recent_goals_api_key: str | None = None
@@ -115,6 +118,13 @@ def load_config() -> ProxyConfig:
     retrieval_router_enabled = _env_bool("CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED")
     retrieval_query_planner_enabled = _env_bool(
         "CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED"
+    )
+    retrieval_renderer_v2_enabled = _env_bool(
+        "CHAT_PROXY_RETRIEVAL_RENDERER_V2_ENABLED"
+    )
+    retrieval_shadow_enabled = _env_bool("CHAT_PROXY_RETRIEVAL_SHADOW_ENABLED")
+    retrieval_shadow_max_tasks = max(
+        1, int(os.getenv("CHAT_PROXY_RETRIEVAL_SHADOW_MAX_TASKS", "2"))
     )
     kmlog_search_url = os.getenv("CHAT_PROXY_KMLOG_SEARCH_URL", "").strip()
     kmlog_search_api_key = os.getenv("CHAT_PROXY_KMLOG_SEARCH_API_KEY", "").strip()
@@ -239,6 +249,9 @@ def load_config() -> ProxyConfig:
         retrieval_inject_enabled=retrieval_inject_enabled,
         retrieval_router_enabled=retrieval_router_enabled,
         retrieval_query_planner_enabled=retrieval_query_planner_enabled,
+        retrieval_renderer_v2_enabled=retrieval_renderer_v2_enabled,
+        retrieval_shadow_enabled=retrieval_shadow_enabled,
+        retrieval_shadow_max_tasks=retrieval_shadow_max_tasks,
         recent_goals_enabled=recent_goals_enabled,
         recent_goals_url=recent_goals_url.rstrip("/") or None,
         recent_goals_api_key=recent_goals_api_key or None,

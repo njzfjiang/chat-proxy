@@ -47,6 +47,9 @@ async def _wait_summary_tasks(app):
     daily_tasks = list(app.state.daily_summary_tasks)
     if daily_tasks:
         await asyncio.gather(*daily_tasks)
+    shadow_tasks = list(app.state.retrieval_shadow_tasks)
+    if shadow_tasks:
+        await asyncio.gather(*shadow_tasks)
 
 
 @pytest.fixture
@@ -2217,6 +2220,131 @@ async def test_web_chat_retrieves_kmlog_without_injecting_until_enabled(
     assert kmlog["inject"] is False
     assert kmlog["message_count"] == 0
     assert kmlog["items"][0]["id"] == 101
+
+
+@pytest.mark.anyio
+async def test_retrieval_shadow_records_candidate_without_changing_active_prompt(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    captured_body = {}
+    search_payloads = []
+
+    async def completions(request: Request):
+        captured_body.update(await request.json())
+        return JSONResponse(
+            {
+                "id": "cmpl-shadow",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "shadow answer"}}
+                ],
+            }
+        )
+
+    class FakeSearchResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            excerpt = (
+                "关颐发现旧信中的线索，掰开封蜡后展开纸条，拼图终于合上，"
+                + "背景记录" * 100
+                + "。"
+            )
+            return {
+                "evidence_version": 1,
+                "results": [
+                    {
+                        "id": 7553,
+                        "timestamp": "2026-05-17T12:00:00Z",
+                        "role": "assistant",
+                        "matched_excerpt": excerpt,
+                        "content_preview": excerpt,
+                        "conversation_title": "Creative history",
+                        "body_matched_terms": ["关颐", "线索"],
+                        "evidence_version": 1,
+                    }
+                ],
+            }
+
+    class FakeSearchClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            search_payloads.append(json)
+            return FakeSearchResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeSearchClient)
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            kmlog_search_url="http://kmlog",
+            kmlog_search_chars_total=180,
+            retrieval_shadow_enabled=True,
+        )
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat",
+            json={
+                "client_id": "phone-1",
+                "conversation_id": "shadow-chat",
+                "request_id": "req-shadow",
+                "retrieval_enabled": True,
+                "retrieval_inject": True,
+                "user_text": "之前关颐怎么拿到线索的？",
+            },
+        )
+        await _wait_summary_tasks(app)
+        debug = await client.get("/admin/requests?request_id=req-shadow")
+
+    assert resp.status_code == 200
+    assert len(search_payloads) == 2
+    active_message = next(
+        message["content"]
+        for message in captured_body["messages"]
+        if "Retrieved chat log snippets" in message["content"]
+    )
+    assert len(active_message) > 180
+    metadata = debug.json()["requests"][0]["metadata"]
+    active_component = next(
+        component
+        for component in metadata["injected_context_snapshot"]["components"]
+        if component["name"] == "kmlog_search"
+    )
+    shadow = metadata["retrieval_shadow"]
+    assert active_component["renderer"] == "legacy"
+    assert shadow["status"] == "completed"
+    assert shadow["candidate_used_for_answer"] is False
+    assert shadow["active"]["renderer"] == "legacy"
+    assert shadow["candidate"]["renderer"] == "candidate_v2"
+    assert shadow["candidate"]["chars"] <= 180
+    assert shadow["review"]["status"] == "pending"
 
 
 @pytest.mark.anyio

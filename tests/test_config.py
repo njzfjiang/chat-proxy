@@ -20,6 +20,9 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
                 "CHAT_PROXY_RETRIEVAL_INJECT_ENABLED=false",
                 "CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED=true",
                 "CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED=false",
+                "CHAT_PROXY_RETRIEVAL_RENDERER_V2_ENABLED=true",
+                "CHAT_PROXY_RETRIEVAL_SHADOW_ENABLED=true",
+                "CHAT_PROXY_RETRIEVAL_SHADOW_MAX_TASKS=3",
                 "CHAT_PROXY_RECENT_GOALS_ENABLED=true",
                 "CHAT_PROXY_RECENT_GOALS_LIMIT=3",
                 "CHAT_PROXY_REVIEWED_MEMORY_ENABLED=true",
@@ -59,6 +62,9 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_INJECT_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_ROUTER_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_QUERY_PLANNER_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_RENDERER_V2_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_SHADOW_ENABLED", raising=False)
+    monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_SHADOW_MAX_TASKS", raising=False)
     monkeypatch.delenv("CHAT_PROXY_RECENT_GOALS_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_RECENT_GOALS_LIMIT", raising=False)
     monkeypatch.delenv("CHAT_PROXY_REVIEWED_MEMORY_ENABLED", raising=False)
@@ -99,6 +105,9 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     assert cfg.retrieval_inject_enabled is False
     assert cfg.retrieval_router_enabled is True
     assert cfg.retrieval_query_planner_enabled is False
+    assert cfg.retrieval_renderer_v2_enabled is True
+    assert cfg.retrieval_shadow_enabled is True
+    assert cfg.retrieval_shadow_max_tasks == 3
     assert cfg.recent_goals_enabled is True
     assert cfg.recent_goals_url == "http://127.0.0.1:8013"
     assert cfg.recent_goals_api_key == "search-key"

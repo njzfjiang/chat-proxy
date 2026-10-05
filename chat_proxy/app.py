@@ -37,6 +37,7 @@ from .parsing import (
 )
 from .storage import ChatProxyStore
 from .daily_summary import date_key_for, update_daily_summary
+from .retrieval_shadow import kmlog_component, run_retrieval_shadow
 from .summary import inject_rolling_summary, update_conversation_summary
 from .tool_registry import resolve_tools_policy
 
@@ -44,6 +45,7 @@ from .tool_registry import resolve_tools_policy
 # Use Uvicorn's configured error-log hierarchy so INFO lifecycle records reach
 # systemd/journald in the normal production launch configuration.
 stream_logger = logging.getLogger("uvicorn.error.chat_proxy.stream")
+shadow_logger = logging.getLogger("uvicorn.error.chat_proxy.retrieval_shadow")
 
 
 HOP_BY_HOP_HEADERS = {
@@ -72,6 +74,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     app.state.store = store
     app.state.summary_tasks = set()
     app.state.daily_summary_tasks = set()
+    app.state.retrieval_shadow_tasks = set()
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
@@ -79,6 +82,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "ok": True,
             "upstream_base": cfg.upstream_base,
             "db_path": str(cfg.db_path),
+            "retrieval_shadow_enabled": cfg.retrieval_shadow_enabled,
         }
 
     @app.get("/admin/daily-summary/{date_key}")
@@ -443,6 +447,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             body_text=body_text,
             webapp_mode=True,
             context_snapshot=context_result.snapshot,
+            retrieval_shadow_body=body,
         )
 
     @app.post("/build_context")
@@ -547,6 +552,7 @@ async def _handle_chat_completions(
         body_text=body_text,
         webapp_mode=False,
         context_snapshot=None,
+        retrieval_shadow_body=None,
     )
 
 
@@ -561,6 +567,7 @@ async def _handle_chat_body(
     body_text: str,
     webapp_mode: bool,
     context_snapshot: dict[str, Any] | None,
+    retrieval_shadow_body: dict[str, Any] | None,
 ):
     request_id = request_id_for(body_text, incoming_headers)
     duplicate = _duplicate_request_response(store, incoming_headers, request_id)
@@ -603,6 +610,12 @@ async def _handle_chat_body(
         "path": incoming_path,
         "user_message_reused_for_tool_continuation": reused_user_message,
     }
+    if cfg.retrieval_shadow_enabled and retrieval_shadow_body is not None:
+        metadata["retrieval_shadow"] = {
+            "status": "scheduled",
+            "mode": "active_vs_candidate_v2",
+            "candidate_used_for_answer": False,
+        }
 
     store.upsert_conversation(
         conversation_id=identity.conversation_id,
@@ -623,6 +636,16 @@ async def _handle_chat_body(
         request_json=body,
         metadata=metadata,
     )
+
+    if cfg.retrieval_shadow_enabled and retrieval_shadow_body is not None:
+        _schedule_retrieval_shadow(
+            app=app,
+            cfg=cfg,
+            store=store,
+            request_id=request_id,
+            request_body=retrieval_shadow_body,
+            context_snapshot=context_snapshot,
+        )
 
     if user_text and not reused_user_message:
         store.insert_message(
@@ -1415,6 +1438,7 @@ def _debug_metadata(metadata: Any) -> dict[str, Any]:
         "upstream_body_mode": metadata.get("upstream_body_mode"),
         "rolling_summary_injected": metadata.get("rolling_summary_injected"),
         "injected_context_snapshot": metadata.get("injected_context_snapshot"),
+        "retrieval_shadow": metadata.get("retrieval_shadow"),
         "path": metadata.get("path"),
     }
 
@@ -1601,6 +1625,71 @@ def _zoneinfo(timezone_name: str):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _schedule_retrieval_shadow(
+    *,
+    app: FastAPI,
+    cfg: ProxyConfig,
+    store: ChatProxyStore,
+    request_id: str,
+    request_body: dict[str, Any],
+    context_snapshot: dict[str, Any] | None,
+) -> None:
+    tasks = app.state.retrieval_shadow_tasks
+    if len(tasks) >= cfg.retrieval_shadow_max_tasks:
+        store.merge_request_metadata(
+            request_id=request_id,
+            now=_now(),
+            patch={
+                "retrieval_shadow": {
+                    "status": "dropped",
+                    "reason": "max_tasks_reached",
+                    "candidate_used_for_answer": False,
+                }
+            },
+        )
+        shadow_logger.warning(
+            "retrieval_shadow_dropped request_id=%s active_tasks=%s max_tasks=%s",
+            request_id,
+            len(tasks),
+            cfg.retrieval_shadow_max_tasks,
+        )
+        return
+
+    active_component = kmlog_component(context_snapshot)
+
+    async def execute() -> None:
+        try:
+            result = await asyncio.to_thread(
+                run_retrieval_shadow,
+                request_id=request_id,
+                request_body=request_body,
+                cfg=cfg,
+                active_component=active_component,
+            )
+        except Exception as exc:
+            result = {
+                "status": "error",
+                "request_id": request_id,
+                "candidate_used_for_answer": False,
+                "error": str(exc),
+            }
+        store.merge_request_metadata(
+            request_id=request_id,
+            now=_now(),
+            patch={"retrieval_shadow": result},
+        )
+        shadow_logger.info(
+            "retrieval_shadow_terminal request_id=%s status=%s duration_ms=%s",
+            request_id,
+            result.get("status"),
+            result.get("duration_ms"),
+        )
+
+    task = asyncio.create_task(execute())
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
 
 
 def _schedule_summary_update(

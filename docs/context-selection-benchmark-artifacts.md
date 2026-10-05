@@ -39,6 +39,15 @@ Keep these artifacts while the selector and planner changes are under review:
 - `docs/context-selection-evaluation-round3.md`: concept-aware creative
   filtering, `8422`/`17699` rejection controls, real-backend positive checks,
   and the 32-seed model-free regression.
+- `benchmarks/context_selection/audit_creative_positive_trace.py`: read-only
+  real-backend trace generator for backend top 20, rerank decisions, and final
+  visible context. Raw outputs remain ignored because they contain chat-derived
+  evidence.
+- `context_selection_renderer_budget_v21_20261005` and its matching zip:
+  renderer-change 32-seed baseline retained for shadow review. It contains the
+  per-seed evidence and legacy outputs, retrieval snapshots, reports, and
+  manifest; all 32 seeds succeeded with no future leaks or contexts over 1,200
+  characters.
 
 ## Reproducing a local seed
 
