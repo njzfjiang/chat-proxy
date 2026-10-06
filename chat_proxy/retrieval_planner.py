@@ -27,6 +27,11 @@ _DISCUSSION_SOURCE_RE = re.compile(
     r"(?:和|跟|向)\s*([A-Za-z][A-Za-z0-9_+.-]{1,})\s*(?:讨论|聊|说|问)",
     re.IGNORECASE,
 )
+_ENTITY_ACQUISITION_RE = re.compile(
+    r"^(?P<entity>[\u3400-\u9fff·]{1,12}?)(?:是)?(?:怎么|如何|怎样)(?:才)?"
+    r"(?P<action>拿到|得到|取得|获得|发现|找到|收到|接到|取到)(?:了)?"
+    r"(?P<object>[\u3400-\u9fff·]{1,12}?)(?:的)?$"
+)
 
 _MEMORY_TERMS = (
     "memory infra",
@@ -175,6 +180,26 @@ _META_TERMS = (
 )
 _NARRATIVE_CORE_TERMS = ("剧情", "人物", "角色", "小说", "情节", "卡文")
 _NARRATIVE_SUPPORT_TERMS = ("证据", "线索", "伏笔", "写作")
+_GENERIC_RECOLLECTION_ENTITIES = {
+    "我",
+    "你",
+    "他",
+    "她",
+    "它",
+    "我们",
+    "你们",
+    "他们",
+    "她们",
+    "这个人",
+    "那个人",
+    "人物",
+    "角色",
+    "某个人物",
+    "某个角色",
+    "主角",
+    "女主",
+    "男主",
+}
 _RECOLLECTION_TERMS = (
     "之前",
     "以前",
@@ -365,9 +390,21 @@ def plan_retrieval(text: str) -> RetrievalPlan:
         and (domains or not self_contained_narration)
     ):
         domains.append("recollection")
-        if not narrative_core_hits:
-            terms.extend(recollection_hits)
-        terms.extend(_recollection_subjects(cleaned))
+        recollection_subjects = _recollection_subjects(cleaned)
+        entity_terms, evidence_terms, action_terms = _entity_acquisition_terms(
+            recollection_subjects
+        )
+        if not narrative_core_hits and entity_terms:
+            terms.extend(entity_terms)
+            terms.extend(evidence_terms)
+            terms.extend(action_terms)
+            required_terms.extend(entity_terms)
+            optional_terms.extend(evidence_terms)
+            optional_terms.extend(action_terms)
+        else:
+            if not narrative_core_hits:
+                terms.extend(recollection_hits)
+            terms.extend(recollection_subjects)
         sources.append(SOURCE_CHAT_HISTORY)
         reasons.append("explicit recollection cue requests older conversation context")
     if meta_hits:
@@ -468,6 +505,29 @@ def _recollection_subjects(text: str) -> list[str]:
         if subject:
             subjects.append(subject)
     return subjects
+
+
+def _entity_acquisition_terms(
+    subjects: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    entities = []
+    evidence_terms = []
+    action_terms = []
+    for subject in subjects:
+        match = _ENTITY_ACQUISITION_RE.fullmatch(subject)
+        if match is None:
+            continue
+        entity = match.group("entity").strip()
+        if entity in _GENERIC_RECOLLECTION_ENTITIES:
+            continue
+        object_text = match.group("object").strip()
+        object_terms = _matched_terms(object_text, _NARRATIVE_SUPPORT_TERMS)
+        if not object_terms:
+            continue
+        entities.append(entity)
+        evidence_terms.extend(object_terms)
+        action_terms.append(match.group("action"))
+    return _dedupe(entities), _dedupe(evidence_terms), _dedupe(action_terms)
 
 
 def _explicit_quote_recall(text: str) -> bool:

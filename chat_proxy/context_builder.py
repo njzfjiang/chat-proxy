@@ -1216,11 +1216,16 @@ def _mother_route_reason(path: str, route_reasons: Mapping[str, str]) -> str | N
     return None
 
 
+def _normalized_query_text(value: Any) -> str:
+    return re.sub(r"[^\w\u3400-\u9fff]+", "", str(value or "").casefold())
+
+
 def _rerank_kmlog_results(
     results: list[Any],
     *,
     plan: Any,
     limit: int,
+    query_text: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     required_terms = list(plan.required_terms)
     optional_terms = list(plan.optional_terms)
@@ -1231,13 +1236,23 @@ def _rerank_kmlog_results(
     seen_content: dict[str, Any] = {}
     synthetic_filtered = 0
     duplicate_filtered = 0
+    query_echo_filtered = 0
     entity_filtered = 0
     filter_reasons: list[dict[str, Any]] = []
+    normalized_query_text = _normalized_query_text(query_text)
     for index, raw_item in enumerate(results):
         if not isinstance(raw_item, Mapping):
             continue
         item = dict(raw_item)
         preview = str(item.get("content_preview") or "").strip()
+        if (
+            str(item.get("role") or "").strip().casefold() == "user"
+            and normalized_query_text
+            and _normalized_query_text(preview) == normalized_query_text
+        ):
+            query_echo_filtered += 1
+            filter_reasons.append({"id": item.get("id"), "reason": "query_echo"})
+            continue
         evidence = item.get("evidence_version") == 1
         if item.get("synthetic_context") or preview.startswith(
             "The following context is provided by the system."
@@ -1329,6 +1344,7 @@ def _rerank_kmlog_results(
         {
             "synthetic_filtered": synthetic_filtered,
             "duplicate_filtered": duplicate_filtered,
+            "query_echo_filtered": query_echo_filtered,
             "entity_filtered": entity_filtered,
             "filter_reasons": filter_reasons,
         },
@@ -1487,6 +1503,7 @@ def _kmlog_search_messages(
             results,
             plan=plan,
             limit=result_limit,
+            query_text=query,
         )
         snapshot["planner_filter_stats"] = planner_filter_stats
     snapshot["rerank_output_ids"] = [

@@ -91,6 +91,7 @@ def test_chat_reranker_requires_project_entity_and_deduplicates():
     assert stats == {
         "synthetic_filtered": 1,
         "duplicate_filtered": 1,
+        "query_echo_filtered": 0,
         "entity_filtered": 1,
         "filter_reasons": [
             {"id": 1, "reason": "missing_required_term", "required_terms": ["cyclegan", "pix2pix"]},
@@ -200,6 +201,53 @@ def test_recollection_keeps_topic_named_after_discussion_source():
     assert "fista" in plan.search_query.casefold()
     assert "convergence" in plan.search_query.casefold()
     assert "deepseek" not in plan.search_query.casefold()
+
+
+def test_entity_acquisition_recollection_uses_entity_and_evidence_terms():
+    plan = plan_retrieval("之前关颐是怎么拿到线索的？")
+
+    assert plan.matched_domains == ("recollection",)
+    assert plan.search_query == "关颐 线索 拿到"
+    assert plan.required_terms == ("关颐",)
+    assert plan.optional_terms == ("线索", "拿到")
+    assert "之前" not in plan.search_query
+    assert "怎么" not in plan.search_query
+
+
+def test_entity_acquisition_does_not_promote_generic_pronouns():
+    plan = plan_retrieval("之前你是怎么拿到证据的？")
+
+    assert plan.required_terms == ()
+    assert "你是" not in plan.required_terms
+
+
+def test_entity_acquisition_recollection_filters_weak_cue_matches():
+    plan = plan_retrieval("之前关颐是怎么拿到线索的？")
+    rows = [
+        {"id": 0, "role": "user", "content_preview": "之前关颐是怎么拿到线索的？"},
+        {"id": 1, "content_preview": "之前只是讨论了别的事情。"},
+        {"id": 2, "content_preview": "关颐在唱片夹层里发现纸条，拿到了关键线索。"},
+        {"id": 3, "content_preview": "关颐脑中拼图合上，随后展开了泛黄的信。"},
+    ]
+
+    ranked, stats = _rerank_kmlog_results(
+        rows,
+        plan=plan,
+        limit=5,
+        query_text="之前关颐是怎么拿到线索的？",
+    )
+
+    assert [item["id"] for item in ranked] == [2, 3]
+    assert stats["entity_filtered"] == 1
+    assert stats["query_echo_filtered"] == 1
+    assert stats["filter_reasons"] == [
+        {"id": 0, "reason": "query_echo"},
+        {
+            "id": 1,
+            "reason": "missing_required_term",
+            "required_terms": ["关颐"],
+        },
+    ]
 
 
 def test_creative_writing_reranker_keeps_a_conservative_coherence_gate():
