@@ -417,6 +417,7 @@ conversation IDs only:
 
 ```text
 CHAT_PROXY_RETRIEVAL_CANDIDATE_CANARY_CONVERSATION_IDS=conversation-a,conversation-b
+CHAT_PROXY_RETRIEVAL_EXCLUDED_CONVERSATION_IDS=older-test-a,older-test-b
 ```
 
 Allowlisted `POST /chat` requests force retrieval injection, router, query
@@ -425,7 +426,13 @@ error falls back to the unchanged active request; an empty candidate result
 does not. The decision is recorded under
 `metadata.retrieval_candidate_canary`, while `candidate_used_for_answer` in the
 shadow trace reports whether candidate context actually reached the upstream
-answer request. `/healthz` exposes only the allowlist count, not its IDs.
+answer request. Canary retrieval automatically excludes its own conversation
+from KMLog search so previous test prompts and generated answers cannot occupy
+candidate slots. `CHAT_PROXY_RETRIEVAL_EXCLUDED_CONVERSATION_IDS` adds older
+test/shadow conversations managed by the proxy. KMLog applies both exclusions
+before top-k selection and reports exclusion counts in the retrieval trace.
+Deploy the KMLog API change before the proxy change. `/healthz` exposes only
+allowlist/exclusion counts, not their IDs.
 
 The optional retrieval router is deterministic and disabled by default. It
 selects candidate sources (`recent`, J recent goals, reviewed memory, chat

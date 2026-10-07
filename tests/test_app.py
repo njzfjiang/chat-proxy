@@ -2511,6 +2511,9 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
         for message in captured_bodies[1]["messages"]
     )
     assert len(search_payloads) == 3
+    assert search_payloads[0]["exclude_conversation_ids"] == ["canary-chat"]
+    assert search_payloads[1]["exclude_conversation_ids"] == ["canary-chat"]
+    assert "exclude_conversation_ids" not in search_payloads[2]
     canary_metadata = canary_debug.json()["requests"][0]["metadata"]
     assert canary_metadata["retrieval_candidate_canary"] == {
         "selected": True,
@@ -2524,6 +2527,8 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
         if component["name"] == "kmlog_search"
     )
     assert canary_component["renderer"] == "candidate_v2"
+    assert canary_component["excluded_conversation_ids"] == ["canary-chat"]
+    assert canary_component["excluded_conversation_id_count"] == 1
     control_metadata = control_debug.json()["requests"][0]["metadata"]
     assert control_metadata["retrieval_candidate_canary"] is None
     assert control_metadata["retrieval_shadow"]["candidate_used_for_answer"] is False

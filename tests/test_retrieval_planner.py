@@ -232,6 +232,8 @@ def test_entity_acquisition_precedes_narrative_provenance_suffix():
     assert plan.search_query == "唐雁止 伪造命令 线索 发现"
     assert plan.required_terms == ("唐雁止", "伪造命令")
     assert plan.optional_terms == ("线索", "发现")
+    assert plan.entity_terms == ("唐雁止",)
+    assert plan.object_terms == ("伪造命令",)
     assert "剧情" not in plan.required_terms
 
 
@@ -347,6 +349,68 @@ def test_creative_writing_reranker_accepts_evidence_paraphrases():
         item["creative_match"]["acceptance"] == "semantic_evidence_coherence"
         for item in ranked
     )
+
+
+def test_entity_recollection_blocks_zero_entity_creative_fallback_and_echoes():
+    query = (
+        "之前唐雁止是怎么发现伪造命令线索的？"
+        "请简短回答，并说明这是既定剧情还是此前讨论的设计建议。"
+    )
+    plan = plan_retrieval(query)
+    rows = [
+        {
+            "id": 1,
+            "role": "assistant",
+            "content_preview": "唐雁止发现批条上的伪造命令线索。",
+        },
+        {
+            "id": 2,
+            "role": "assistant",
+            "content_preview": "唐雁止拿到一封盟主亲笔书信（伪），由此发现幕后安排。",
+        },
+        {
+            "id": 3,
+            "role": "assistant",
+            "content_preview": "一段旧军令给出了线索，三人通过书信发现新的拼图。",
+        },
+        {
+            "id": 4,
+            "role": "user",
+            "content_preview": "之前唐雁止是怎么发现伪造命令线索的？请简短回答。",
+        },
+    ]
+
+    ranked, stats = _rerank_kmlog_results(
+        rows,
+        plan=plan,
+        limit=5,
+        query_text=query,
+    )
+
+    assert [item["id"] for item in ranked] == [1, 2]
+    assert ranked[0]["planner_entity_matches"] == ["唐雁止"]
+    assert ranked[0]["planner_object_matches"] == ["伪造命令"]
+    assert ranked[1]["planner_entity_matches"] == ["唐雁止"]
+    assert ranked[1]["planner_object_matches"] == []
+    assert stats["query_echo_filtered"] == 1
+    assert stats["entity_filtered"] == 1
+    assert stats["filter_reasons"] == [
+        {
+            "id": 3,
+            "reason": "missing_entity_term",
+            "required_terms": ["唐雁止", "伪造命令"],
+            "missing_required_terms": ["唐雁止", "伪造命令"],
+            "entity_terms": ["唐雁止"],
+            "missing_entity_terms": ["唐雁止"],
+            "creative_concept_matches": {
+                "narrative": [],
+                "evidence": ["线索", "书信", "拼图"],
+                "transfer": ["发现"],
+            },
+            "missing_creative_concepts": [],
+        },
+        {"id": 4, "reason": "query_echo"},
+    ]
 
 
 def test_long_self_contained_recollection_narration_skips_history():

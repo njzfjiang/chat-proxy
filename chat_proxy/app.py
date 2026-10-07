@@ -100,6 +100,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "retrieval_candidate_canary_count": len(
                 cfg.retrieval_candidate_canary_conversation_ids
             ),
+            "retrieval_excluded_conversation_count": len(
+                cfg.retrieval_excluded_conversation_ids
+            ),
         }
 
     @app.get("/admin/daily-summary/{date_key}")
@@ -487,7 +490,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             body_text=body_text,
             webapp_mode=True,
             context_snapshot=context_result.snapshot,
-            retrieval_shadow_body=body,
+            retrieval_shadow_body=context_body,
             retrieval_candidate_canary=canary,
         )
 
@@ -1450,14 +1453,34 @@ def _retrieval_candidate_canary_body(
     identity = resolve_conversation(headers, body)
     if identity.conversation_id not in allowlist:
         return body, None
+    excluded = list(
+        dict.fromkeys(
+            [
+                *cfg.retrieval_excluded_conversation_ids,
+                *_body_string_list(body, "retrieval_exclude_conversation_ids"),
+                identity.conversation_id,
+            ]
+        )
+    )
     return (
-        {**body, **RETRIEVAL_CANDIDATE_CANARY_FLAGS},
+        {
+            **body,
+            **RETRIEVAL_CANDIDATE_CANARY_FLAGS,
+            "retrieval_exclude_conversation_ids": excluded,
+        },
         {
             "selected": True,
             "candidate_used_for_answer": False,
             "fallback_reason": None,
         },
     )
+
+
+def _body_string_list(body: dict[str, Any], key: str) -> list[str]:
+    value = body.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for raw in value if (item := str(raw or "").strip())]
 
 
 def _conversation_payload(row: dict[str, Any]) -> dict[str, Any]:

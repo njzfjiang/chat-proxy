@@ -35,6 +35,7 @@ class ProxyConfig:
     retrieval_shadow_enabled: bool = False
     retrieval_shadow_max_tasks: int = 2
     retrieval_candidate_canary_conversation_ids: tuple[str, ...] = ()
+    retrieval_excluded_conversation_ids: tuple[str, ...] = ()
     recent_goals_enabled: bool = False
     recent_goals_url: str | None = None
     recent_goals_api_key: str | None = None
@@ -129,6 +130,9 @@ def load_config() -> ProxyConfig:
     )
     retrieval_candidate_canary_conversation_ids = _parse_csv_list(
         os.getenv("CHAT_PROXY_RETRIEVAL_CANDIDATE_CANARY_CONVERSATION_IDS", "")
+    )
+    retrieval_excluded_conversation_ids = _parse_csv_list(
+        os.getenv("CHAT_PROXY_RETRIEVAL_EXCLUDED_CONVERSATION_IDS", "")
     )
     kmlog_search_url = os.getenv("CHAT_PROXY_KMLOG_SEARCH_URL", "").strip()
     kmlog_search_api_key = os.getenv("CHAT_PROXY_KMLOG_SEARCH_API_KEY", "").strip()
@@ -259,6 +263,7 @@ def load_config() -> ProxyConfig:
         retrieval_candidate_canary_conversation_ids=(
             retrieval_candidate_canary_conversation_ids
         ),
+        retrieval_excluded_conversation_ids=retrieval_excluded_conversation_ids,
         recent_goals_enabled=recent_goals_enabled,
         recent_goals_url=recent_goals_url.rstrip("/") or None,
         recent_goals_api_key=recent_goals_api_key or None,

@@ -317,6 +317,8 @@ class RetrievalPlan:
     required_terms: tuple[str, ...]
     optional_terms: tuple[str, ...]
     reasons: tuple[str, ...]
+    entity_terms: tuple[str, ...] = ()
+    object_terms: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -326,6 +328,8 @@ class RetrievalPlan:
             "matched_terms": list(self.matched_terms),
             "required_terms": list(self.required_terms),
             "optional_terms": list(self.optional_terms),
+            "entity_terms": list(self.entity_terms),
+            "object_terms": list(self.object_terms),
             "reasons": list(self.reasons),
         }
 
@@ -481,6 +485,8 @@ def plan_retrieval(text: str) -> RetrievalPlan:
         matched_terms=tuple(deduped_terms),
         required_terms=tuple(deduped_required_terms),
         optional_terms=tuple(deduped_optional_terms),
+        entity_terms=tuple(acquisition_entity_terms),
+        object_terms=tuple(acquisition_object_terms),
         reasons=tuple(reasons),
     )
 

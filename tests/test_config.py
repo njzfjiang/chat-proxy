@@ -24,6 +24,7 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
                 "CHAT_PROXY_RETRIEVAL_SHADOW_ENABLED=true",
                 "CHAT_PROXY_RETRIEVAL_SHADOW_MAX_TASKS=3",
                 "CHAT_PROXY_RETRIEVAL_CANDIDATE_CANARY_CONVERSATION_IDS=canary-a, canary-b,canary-a",
+                "CHAT_PROXY_RETRIEVAL_EXCLUDED_CONVERSATION_IDS=test-a,test-b,test-a",
                 "CHAT_PROXY_RECENT_GOALS_ENABLED=true",
                 "CHAT_PROXY_RECENT_GOALS_LIMIT=3",
                 "CHAT_PROXY_REVIEWED_MEMORY_ENABLED=true",
@@ -68,6 +69,9 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
     monkeypatch.delenv("CHAT_PROXY_RETRIEVAL_SHADOW_MAX_TASKS", raising=False)
     monkeypatch.delenv(
         "CHAT_PROXY_RETRIEVAL_CANDIDATE_CANARY_CONVERSATION_IDS", raising=False
+    )
+    monkeypatch.delenv(
+        "CHAT_PROXY_RETRIEVAL_EXCLUDED_CONVERSATION_IDS", raising=False
     )
     monkeypatch.delenv("CHAT_PROXY_RECENT_GOALS_ENABLED", raising=False)
     monkeypatch.delenv("CHAT_PROXY_RECENT_GOALS_LIMIT", raising=False)
@@ -116,6 +120,7 @@ def test_load_dotenv_sets_missing_values_without_overriding(monkeypatch, tmp_pat
         "canary-a",
         "canary-b",
     )
+    assert cfg.retrieval_excluded_conversation_ids == ("test-a", "test-b")
     assert cfg.recent_goals_enabled is True
     assert cfg.recent_goals_url == "http://127.0.0.1:8013"
     assert cfg.recent_goals_api_key == "search-key"

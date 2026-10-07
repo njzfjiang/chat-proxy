@@ -1221,6 +1221,17 @@ def _normalized_query_text(value: Any) -> str:
     return re.sub(r"[^\w\u3400-\u9fff]+", "", str(value or "").casefold())
 
 
+def _is_query_echo(candidate_text: Any, query_text: Any) -> bool:
+    candidate = _normalized_query_text(candidate_text)
+    query = _normalized_query_text(query_text)
+    if not candidate or not query:
+        return False
+    if candidate == query:
+        return True
+    shorter, longer = sorted((candidate, query), key=len)
+    return len(shorter) >= 12 and shorter in longer
+
+
 def _rerank_kmlog_results(
     results: list[Any],
     *,
@@ -1230,13 +1241,17 @@ def _rerank_kmlog_results(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     required_terms = list(plan.required_terms)
     optional_terms = list(plan.optional_terms)
+    entity_terms = list(getattr(plan, "entity_terms", ()))
+    object_terms = list(getattr(plan, "object_terms", ()))
     creative_writing = "creative_writing" in set(
         getattr(plan, "matched_domains", ())
     )
     entity_recollection = (
         "recollection" in set(getattr(plan, "matched_domains", ()))
-        and not creative_writing
-        and len(required_terms) > 1
+        and bool(entity_terms)
+    )
+    strict_entity_recollection = (
+        entity_recollection and not creative_writing and len(required_terms) > 1
     )
     ranked: list[tuple[int, int, int, int, dict[str, Any]]] = []
     seen_content: dict[str, Any] = {}
@@ -1245,7 +1260,6 @@ def _rerank_kmlog_results(
     query_echo_filtered = 0
     entity_filtered = 0
     filter_reasons: list[dict[str, Any]] = []
-    normalized_query_text = _normalized_query_text(query_text)
     for index, raw_item in enumerate(results):
         if not isinstance(raw_item, Mapping):
             continue
@@ -1253,8 +1267,7 @@ def _rerank_kmlog_results(
         preview = str(item.get("content_preview") or "").strip()
         if (
             str(item.get("role") or "").strip().casefold() == "user"
-            and normalized_query_text
-            and _normalized_query_text(preview) == normalized_query_text
+            and _is_query_echo(preview, query_text)
         ):
             query_echo_filtered += 1
             filter_reasons.append({"id": item.get("id"), "reason": "query_echo"})
@@ -1283,6 +1296,15 @@ def _rerank_kmlog_results(
         missing_required_terms = [
             term for term in required_terms if term not in required_matches
         ]
+        entity_matches = [
+            term for term in entity_terms if term in required_matches
+        ]
+        object_matches = [
+            term for term in object_terms if term in required_matches
+        ]
+        missing_entity_terms = [
+            term for term in entity_terms if term not in entity_matches
+        ]
         creative_match = None
         if creative_writing:
             creative_match = match_creative_evidence(
@@ -1292,21 +1314,36 @@ def _rerank_kmlog_results(
                 matched_terms=body_terms,
                 keyword_match=_keyword_match,
             )
-        reject_required_terms = required_terms and (
+        missing_entity_gate = entity_recollection and not entity_matches
+        reject_required_terms = missing_entity_gate or bool(required_terms and (
             not required_matches
-            or (entity_recollection and bool(missing_required_terms))
-        )
+            or (
+                entity_recollection
+                and not creative_writing
+                and bool(missing_required_terms)
+            )
+        ))
         if creative_match is not None:
-            reject_required_terms = not creative_match["accepted"]
+            reject_required_terms = (
+                missing_entity_gate or not creative_match["accepted"]
+            )
         if reject_required_terms:
             entity_filtered += 1
             reason = {
                 "id": item.get("id"),
-                "reason": "missing_required_term",
+                "reason": (
+                    "missing_entity_term"
+                    if missing_entity_gate and creative_writing
+                    else "missing_required_term"
+                ),
                 "required_terms": required_terms,
             }
-            if entity_recollection:
+            if strict_entity_recollection:
                 reason["missing_required_terms"] = missing_required_terms
+            if entity_recollection and creative_writing:
+                reason["missing_required_terms"] = missing_required_terms
+                reason["entity_terms"] = entity_terms
+                reason["missing_entity_terms"] = missing_entity_terms
             if creative_match is not None:
                 reason["missing_required_terms"] = missing_required_terms
                 reason["creative_concept_matches"] = creative_match[
@@ -1336,6 +1373,8 @@ def _rerank_kmlog_results(
         ]
         item["planner_required_matches"] = required_matches
         item["planner_optional_matches"] = optional_matches
+        item["planner_entity_matches"] = entity_matches
+        item["planner_object_matches"] = object_matches
         if creative_match is not None:
             item["creative_match"] = creative_match
         entity_weight = max(
@@ -1437,6 +1476,14 @@ def _kmlog_search_messages(
         "mode": "auto",
         "kinds": ["chat"],
     }
+    excluded_conversation_ids = _dedupe_strings(
+        [
+            *cfg.retrieval_excluded_conversation_ids,
+            *_string_list(body.get("retrieval_exclude_conversation_ids")),
+        ]
+    )
+    if excluded_conversation_ids:
+        payload["exclude_conversation_ids"] = excluded_conversation_ids
     if evidence_enabled:
         payload["include_evidence"] = True
         if candidate_results_enabled:
@@ -1479,6 +1526,13 @@ def _kmlog_search_messages(
         snapshot["error"] = "Search response did not contain results."
         return [], snapshot
     snapshot["evidence_version"] = data.get("evidence_version")
+    snapshot["excluded_conversation_ids"] = data.get(
+        "excluded_conversation_ids", excluded_conversation_ids
+    )
+    snapshot["excluded_conversation_id_count"] = data.get(
+        "excluded_conversation_id_count", len(excluded_conversation_ids)
+    )
+    snapshot["excluded_message_count"] = data.get("excluded_message_count")
     snapshot["candidate_pool_ids"] = data.get("candidate_ids", [])
     snapshot["backend_candidate_count"] = data.get("candidate_count")
     snapshot["backend_selected_ids"] = data.get("selected_ids", [])
