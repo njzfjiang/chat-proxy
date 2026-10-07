@@ -2350,6 +2350,230 @@ async def test_retrieval_shadow_records_candidate_without_changing_active_prompt
 
 
 @pytest.mark.anyio
+async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    captured_bodies = []
+    search_payloads = []
+
+    async def completions(request: Request):
+        captured_bodies.append(await request.json())
+        return JSONResponse(
+            {
+                "id": "cmpl-canary",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "canary answer"}}
+                ],
+            }
+        )
+
+    class FakeSearchResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            excerpt = "谢常流在山道旧战场发现了带家纹的断剑，因此拿到线索。"
+            return {
+                "evidence_version": 1,
+                "results": [
+                    {
+                        "id": 7553,
+                        "timestamp": "2026-05-17T12:00:00Z",
+                        "role": "assistant",
+                        "matched_excerpt": excerpt,
+                        "content_preview": excerpt,
+                        "conversation_title": "Creative history",
+                        "body_matched_terms": ["谢常流", "断剑", "线索", "拿到"],
+                        "evidence_version": 1,
+                    }
+                ],
+            }
+
+    class FakeSearchClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            search_payloads.append(json)
+            return FakeSearchResponse()
+
+    monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeSearchClient)
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            kmlog_search_url="http://kmlog",
+            retrieval_shadow_enabled=True,
+            retrieval_candidate_canary_conversation_ids=("canary-chat",),
+        )
+    )
+    prompt = "之前谢常流是怎么拿到断剑线索的？"
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        canary_resp = await client.post(
+            "/chat",
+            json={
+                "conversation_id": "canary-chat",
+                "request_id": "req-canary",
+                "user_text": prompt,
+            },
+        )
+        await _wait_summary_tasks(app)
+        canary_debug = await client.get("/admin/requests?request_id=req-canary")
+        control_resp = await client.post(
+            "/chat",
+            json={
+                "conversation_id": "control-chat",
+                "request_id": "req-control",
+                "user_text": prompt,
+            },
+        )
+        await _wait_summary_tasks(app)
+        control_debug = await client.get("/admin/requests?request_id=req-control")
+
+    assert canary_resp.status_code == 200
+    assert control_resp.status_code == 200
+    assert any(
+        "Retrieved chat log snippets" in message["content"]
+        for message in captured_bodies[0]["messages"]
+    )
+    assert all(
+        "Retrieved chat log snippets" not in message["content"]
+        for message in captured_bodies[1]["messages"]
+    )
+    assert len(search_payloads) == 3
+    canary_metadata = canary_debug.json()["requests"][0]["metadata"]
+    assert canary_metadata["retrieval_candidate_canary"] == {
+        "selected": True,
+        "candidate_used_for_answer": True,
+        "fallback_reason": None,
+    }
+    assert canary_metadata["retrieval_shadow"]["candidate_used_for_answer"] is True
+    canary_component = next(
+        component
+        for component in canary_metadata["injected_context_snapshot"]["components"]
+        if component["name"] == "kmlog_search"
+    )
+    assert canary_component["renderer"] == "candidate_v2"
+    control_metadata = control_debug.json()["requests"][0]["metadata"]
+    assert control_metadata["retrieval_candidate_canary"] is None
+    assert control_metadata["retrieval_shadow"]["candidate_used_for_answer"] is False
+
+
+@pytest.mark.anyio
+async def test_retrieval_candidate_canary_falls_back_on_retrieval_error(
+    tmp_path, upstream_app, monkeypatch
+):
+    db_path = tmp_path / "chat_search.db"
+    _create_base_db(db_path)
+    captured_body = {}
+    search_calls = 0
+
+    async def completions(request: Request):
+        captured_body.update(await request.json())
+        return JSONResponse(
+            {
+                "id": "cmpl-canary-fallback",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "fallback answer"}}
+                ],
+            }
+        )
+
+    class FailingSearchClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, headers=None, json=None):
+            nonlocal search_calls
+            search_calls += 1
+            raise httpx.ConnectError("search unavailable")
+
+    monkeypatch.setattr(
+        "chat_proxy.context_builder.httpx.Client", FailingSearchClient
+    )
+    upstream_app.router.routes.clear()
+    upstream_app.post("/chat/completions")(completions)
+    transport = ASGITransport(app=upstream_app)
+    original_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        kwargs["base_url"] = "http://upstream"
+        return original_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    app = create_app(
+        ProxyConfig(
+            upstream_base="http://upstream",
+            db_path=db_path,
+            kmlog_search_url="http://kmlog",
+            retrieval_candidate_canary_conversation_ids=("canary-chat",),
+        )
+    )
+
+    async with original_async_client(
+        transport=ASGITransport(app=app),
+        base_url="http://proxy",
+    ) as client:
+        resp = await client.post(
+            "/chat",
+            json={
+                "conversation_id": "canary-chat",
+                "request_id": "req-canary-fallback",
+                "user_text": "之前谢常流是怎么拿到断剑线索的？",
+            },
+        )
+        debug = await client.get(
+            "/admin/requests?request_id=req-canary-fallback"
+        )
+
+    assert resp.status_code == 200
+    assert search_calls == 1
+    assert all(
+        "Retrieved chat log snippets" not in message["content"]
+        for message in captured_body["messages"]
+    )
+    metadata = debug.json()["requests"][0]["metadata"]
+    assert metadata["retrieval_candidate_canary"]["selected"] is True
+    assert (
+        metadata["retrieval_candidate_canary"]["candidate_used_for_answer"]
+        is False
+    )
+    assert "search unavailable" in metadata["retrieval_candidate_canary"][
+        "fallback_reason"
+    ]
+
+
+@pytest.mark.anyio
 async def test_web_chat_can_inject_kmlog_retrieval(
     tmp_path, upstream_app, monkeypatch
 ):

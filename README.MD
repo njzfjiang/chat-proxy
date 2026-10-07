@@ -412,6 +412,21 @@ visible excerpts with source roles, active/candidate character counts and
 latency, errors, and an empty manual-review record. If the configured task cap
 is reached, the request records `status=dropped` instead of delaying chat.
 
+After shadow review, a synchronous candidate canary can be enabled for exact
+conversation IDs only:
+
+```text
+CHAT_PROXY_RETRIEVAL_CANDIDATE_CANARY_CONVERSATION_IDS=conversation-a,conversation-b
+```
+
+Allowlisted `POST /chat` requests force retrieval injection, router, query
+planner, evidence mode, and the candidate v2 renderer. A candidate retrieval
+error falls back to the unchanged active request; an empty candidate result
+does not. The decision is recorded under
+`metadata.retrieval_candidate_canary`, while `candidate_used_for_answer` in the
+shadow trace reports whether candidate context actually reached the upstream
+answer request. `/healthz` exposes only the allowlist count, not its IDs.
+
 The optional retrieval router is deterministic and disabled by default. It
 selects candidate sources (`recent`, J recent goals, reviewed memory, chat
 history, Core Anchors, mother memory, or World Book). J and reviewed-memory

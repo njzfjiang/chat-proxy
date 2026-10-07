@@ -63,6 +63,16 @@ HOP_BY_HOP_HEADERS = {
     "content-encoding",
 }
 
+RETRIEVAL_CANDIDATE_CANARY_FLAGS = {
+    "retrieval_enabled": True,
+    "retrieval_inject": True,
+    "retrieval_router_enabled": True,
+    "retrieval_query_planner_enabled": True,
+    "retrieval_evidence_enabled": True,
+    "retrieval_candidate_results_enabled": False,
+    "retrieval_renderer_v2_enabled": True,
+}
+
 
 def create_app(config: ProxyConfig | None = None) -> FastAPI:
     cfg = config or load_config()
@@ -83,6 +93,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "upstream_base": cfg.upstream_base,
             "db_path": str(cfg.db_path),
             "retrieval_shadow_enabled": cfg.retrieval_shadow_enabled,
+            "retrieval_candidate_canary_count": len(
+                cfg.retrieval_candidate_canary_conversation_ids
+            ),
         }
 
     @app.get("/admin/daily-summary/{date_key}")
@@ -426,13 +439,36 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         if isinstance(body, JSONResponse):
             return body
         headers = _web_chat_headers(request.headers, body, cfg)
+        context_body, canary = _retrieval_candidate_canary_body(
+            body=body,
+            cfg=cfg,
+            headers=headers,
+        )
         try:
             context_result = build_web_chat_context(
-                body=body,
+                body=context_body,
                 cfg=cfg,
                 store=store,
                 headers=headers,
             )
+            if canary is not None:
+                candidate_component = kmlog_component(context_result.snapshot)
+                if candidate_component is None or candidate_component.get("error"):
+                    canary["fallback_reason"] = (
+                        str(candidate_component.get("error"))
+                        if candidate_component is not None
+                        else "candidate_component_unavailable"
+                    )
+                    context_result = build_web_chat_context(
+                        body=body,
+                        cfg=cfg,
+                        store=store,
+                        headers=headers,
+                    )
+                else:
+                    canary["candidate_used_for_answer"] = bool(
+                        candidate_component.get("message_count")
+                    )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         upstream_body = context_result.upstream_body
@@ -448,6 +484,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             webapp_mode=True,
             context_snapshot=context_result.snapshot,
             retrieval_shadow_body=body,
+            retrieval_candidate_canary=canary,
         )
 
     @app.post("/build_context")
@@ -553,6 +590,7 @@ async def _handle_chat_completions(
         webapp_mode=False,
         context_snapshot=None,
         retrieval_shadow_body=None,
+        retrieval_candidate_canary=None,
     )
 
 
@@ -568,6 +606,7 @@ async def _handle_chat_body(
     webapp_mode: bool,
     context_snapshot: dict[str, Any] | None,
     retrieval_shadow_body: dict[str, Any] | None,
+    retrieval_candidate_canary: dict[str, Any] | None,
 ):
     request_id = request_id_for(body_text, incoming_headers)
     duplicate = _duplicate_request_response(store, incoming_headers, request_id)
@@ -610,11 +649,17 @@ async def _handle_chat_body(
         "path": incoming_path,
         "user_message_reused_for_tool_continuation": reused_user_message,
     }
+    if retrieval_candidate_canary is not None:
+        metadata["retrieval_candidate_canary"] = retrieval_candidate_canary
+    candidate_used_for_answer = bool(
+        retrieval_candidate_canary
+        and retrieval_candidate_canary.get("candidate_used_for_answer")
+    )
     if cfg.retrieval_shadow_enabled and retrieval_shadow_body is not None:
         metadata["retrieval_shadow"] = {
             "status": "scheduled",
             "mode": "active_vs_candidate_v2",
-            "candidate_used_for_answer": False,
+            "candidate_used_for_answer": candidate_used_for_answer,
         }
 
     store.upsert_conversation(
@@ -650,6 +695,7 @@ async def _handle_chat_body(
                 ),
             },
             context_snapshot=context_snapshot,
+            candidate_used_for_answer=candidate_used_for_answer,
         )
 
     if user_text and not reused_user_message:
@@ -1367,6 +1413,28 @@ def _web_chat_headers(
     return out
 
 
+def _retrieval_candidate_canary_body(
+    *,
+    body: dict[str, Any],
+    cfg: ProxyConfig,
+    headers: dict[str, str],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    allowlist = cfg.retrieval_candidate_canary_conversation_ids
+    if not allowlist:
+        return body, None
+    identity = resolve_conversation(headers, body)
+    if identity.conversation_id not in allowlist:
+        return body, None
+    return (
+        {**body, **RETRIEVAL_CANDIDATE_CANARY_FLAGS},
+        {
+            "selected": True,
+            "candidate_used_for_answer": False,
+            "fallback_reason": None,
+        },
+    )
+
+
 def _conversation_payload(row: dict[str, Any]) -> dict[str, Any]:
     content = str(row.get("last_message_content") or "")
     return {
@@ -1443,6 +1511,9 @@ def _debug_metadata(metadata: Any) -> dict[str, Any]:
         "upstream_body_mode": metadata.get("upstream_body_mode"),
         "rolling_summary_injected": metadata.get("rolling_summary_injected"),
         "injected_context_snapshot": metadata.get("injected_context_snapshot"),
+        "retrieval_candidate_canary": metadata.get(
+            "retrieval_candidate_canary"
+        ),
         "retrieval_shadow": metadata.get("retrieval_shadow"),
         "path": metadata.get("path"),
     }
@@ -1640,6 +1711,7 @@ def _schedule_retrieval_shadow(
     request_id: str,
     request_body: dict[str, Any],
     context_snapshot: dict[str, Any] | None,
+    candidate_used_for_answer: bool = False,
 ) -> None:
     tasks = app.state.retrieval_shadow_tasks
     if len(tasks) >= cfg.retrieval_shadow_max_tasks:
@@ -1650,7 +1722,7 @@ def _schedule_retrieval_shadow(
                 "retrieval_shadow": {
                     "status": "dropped",
                     "reason": "max_tasks_reached",
-                    "candidate_used_for_answer": False,
+                    "candidate_used_for_answer": candidate_used_for_answer,
                 }
             },
         )
@@ -1672,12 +1744,13 @@ def _schedule_retrieval_shadow(
                 request_body=request_body,
                 cfg=cfg,
                 active_component=active_component,
+                candidate_used_for_answer=candidate_used_for_answer,
             )
         except Exception as exc:
             result = {
                 "status": "error",
                 "request_id": request_id,
-                "candidate_used_for_answer": False,
+                "candidate_used_for_answer": candidate_used_for_answer,
                 "error": str(exc),
             }
         store.merge_request_metadata(

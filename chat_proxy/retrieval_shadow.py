@@ -14,6 +14,7 @@ def run_retrieval_shadow(
     request_body: Mapping[str, Any],
     cfg: ProxyConfig,
     active_component: Mapping[str, Any] | None,
+    candidate_used_for_answer: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
     query = _shadow_query(request_body, active_component)
@@ -22,6 +23,7 @@ def run_retrieval_shadow(
             "status": "skipped",
             "reason": "no_query_text",
             "request_id": request_id,
+            "candidate_used_for_answer": candidate_used_for_answer,
         }
 
     candidate_body = dict(request_body)
@@ -48,7 +50,7 @@ def run_retrieval_shadow(
         "status": status,
         "request_id": request_id,
         "mode": "active_vs_candidate_v2",
-        "candidate_used_for_answer": False,
+        "candidate_used_for_answer": candidate_used_for_answer,
         "duration_ms": round((time.monotonic() - started) * 1000),
         "active": active,
         "candidate": projected_candidate,
