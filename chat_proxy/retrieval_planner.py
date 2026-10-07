@@ -351,6 +351,16 @@ def plan_retrieval(text: str) -> RetrievalPlan:
     ]
     recollection_hits = _matched_terms(lowered, _RECOLLECTION_TERMS)
     quote_hits = _matched_terms(lowered, _QUOTE_TERMS)
+    recollection_subjects = (
+        _recollection_subjects(cleaned) if recollection_hits else []
+    )
+    (
+        acquisition_entity_terms,
+        acquisition_object_terms,
+        acquisition_evidence_terms,
+        acquisition_action_terms,
+    ) = _entity_acquisition_terms(recollection_subjects)
+    has_entity_acquisition = bool(acquisition_entity_terms)
 
     if memory_hits:
         domains.append("memory_infra")
@@ -390,13 +400,20 @@ def plan_retrieval(text: str) -> RetrievalPlan:
         )
     if narrative_core_hits:
         domains.append("creative_writing")
-        terms.extend(narrative_hits)
-        required_terms.extend(narrative_hits)
+        if not has_entity_acquisition:
+            terms.extend(narrative_hits)
+            required_terms.extend(narrative_hits)
         sources.append(SOURCE_CHAT_HISTORY)
-        reasons.append(
-            "creative-writing questions search plot and character substance, "
-            "not the named discussion source"
-        )
+        if has_entity_acquisition:
+            reasons.append(
+                "concrete entity recollection takes precedence over narrative "
+                "answer-format terms"
+            )
+        else:
+            reasons.append(
+                "creative-writing questions search plot and character substance, "
+                "not the named discussion source"
+            )
     self_contained_narration = _looks_like_self_contained_narration(cleaned)
     if (
         recollection_hits
@@ -404,22 +421,15 @@ def plan_retrieval(text: str) -> RetrievalPlan:
         and (domains or not self_contained_narration)
     ):
         domains.append("recollection")
-        recollection_subjects = _recollection_subjects(cleaned)
-        (
-            entity_terms,
-            object_terms,
-            evidence_terms,
-            action_terms,
-        ) = _entity_acquisition_terms(recollection_subjects)
-        if not narrative_core_hits and entity_terms:
-            terms.extend(entity_terms)
-            terms.extend(object_terms)
-            terms.extend(evidence_terms)
-            terms.extend(action_terms)
-            required_terms.extend(entity_terms)
-            required_terms.extend(object_terms)
-            optional_terms.extend(evidence_terms)
-            optional_terms.extend(action_terms)
+        if has_entity_acquisition:
+            terms.extend(acquisition_entity_terms)
+            terms.extend(acquisition_object_terms)
+            terms.extend(acquisition_evidence_terms)
+            terms.extend(acquisition_action_terms)
+            required_terms.extend(acquisition_entity_terms)
+            required_terms.extend(acquisition_object_terms)
+            optional_terms.extend(acquisition_evidence_terms)
+            optional_terms.extend(acquisition_action_terms)
         else:
             if not narrative_core_hits:
                 terms.extend(recollection_hits)

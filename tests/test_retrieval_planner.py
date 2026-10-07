@@ -222,6 +222,19 @@ def test_entity_acquisition_recollection_preserves_specific_object():
     assert plan.optional_terms == ("线索", "拿到")
 
 
+def test_entity_acquisition_precedes_narrative_provenance_suffix():
+    plan = plan_retrieval(
+        "之前唐雁止是怎么发现伪造命令线索的？"
+        "请简短回答，并说明这是既定剧情还是此前讨论的设计建议。"
+    )
+
+    assert plan.matched_domains == ("creative_writing", "recollection")
+    assert plan.search_query == "唐雁止 伪造命令 线索 发现"
+    assert plan.required_terms == ("唐雁止", "伪造命令")
+    assert plan.optional_terms == ("线索", "发现")
+    assert "剧情" not in plan.required_terms
+
+
 def test_entity_acquisition_does_not_promote_generic_pronouns():
     plan = plan_retrieval("之前你是怎么拿到证据的？")
 
