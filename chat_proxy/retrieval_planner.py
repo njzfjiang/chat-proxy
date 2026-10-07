@@ -200,6 +200,20 @@ _GENERIC_RECOLLECTION_ENTITIES = {
     "女主",
     "男主",
 }
+_GENERIC_EVIDENCE_OBJECT_MODIFIERS = {
+    "关键",
+    "重要",
+    "相关",
+    "核心",
+    "主要",
+    "具体",
+    "这个",
+    "那个",
+    "这条",
+    "那条",
+    "一条",
+    "某条",
+}
 _RECOLLECTION_TERMS = (
     "之前",
     "以前",
@@ -391,14 +405,19 @@ def plan_retrieval(text: str) -> RetrievalPlan:
     ):
         domains.append("recollection")
         recollection_subjects = _recollection_subjects(cleaned)
-        entity_terms, evidence_terms, action_terms = _entity_acquisition_terms(
-            recollection_subjects
-        )
+        (
+            entity_terms,
+            object_terms,
+            evidence_terms,
+            action_terms,
+        ) = _entity_acquisition_terms(recollection_subjects)
         if not narrative_core_hits and entity_terms:
             terms.extend(entity_terms)
+            terms.extend(object_terms)
             terms.extend(evidence_terms)
             terms.extend(action_terms)
             required_terms.extend(entity_terms)
+            required_terms.extend(object_terms)
             optional_terms.extend(evidence_terms)
             optional_terms.extend(action_terms)
         else:
@@ -509,8 +528,9 @@ def _recollection_subjects(text: str) -> list[str]:
 
 def _entity_acquisition_terms(
     subjects: list[str],
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[str]]:
     entities = []
+    specific_object_terms = []
     evidence_terms = []
     action_terms = []
     for subject in subjects:
@@ -524,10 +544,26 @@ def _entity_acquisition_terms(
         object_terms = _matched_terms(object_text, _NARRATIVE_SUPPORT_TERMS)
         if not object_terms:
             continue
+        specific_object = object_text
+        for object_term in object_terms:
+            specific_object = specific_object.replace(object_term, "")
+        specific_object = re.sub(
+            r"^(?:这个|那个|这条|那条|一条|某条)", "", specific_object
+        ).strip(" 的")
+        if (
+            len(specific_object) >= 2
+            and specific_object not in _GENERIC_EVIDENCE_OBJECT_MODIFIERS
+        ):
+            specific_object_terms.append(specific_object)
         entities.append(entity)
         evidence_terms.extend(object_terms)
         action_terms.append(match.group("action"))
-    return _dedupe(entities), _dedupe(evidence_terms), _dedupe(action_terms)
+    return (
+        _dedupe(entities),
+        _dedupe(specific_object_terms),
+        _dedupe(evidence_terms),
+        _dedupe(action_terms),
+    )
 
 
 def _explicit_quote_recall(text: str) -> bool:

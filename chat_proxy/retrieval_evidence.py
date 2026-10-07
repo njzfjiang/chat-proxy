@@ -242,16 +242,22 @@ def clip_kmlog_evidence(
     required_terms = _dedupe_casefolded(
         list(item.get("planner_required_matches") or [])
     )
+    optional_terms = _dedupe_casefolded(
+        list(item.get("planner_optional_matches") or [])
+    )
     creative_terms = _creative_priority_terms(item) if creative_priority else []
     if creative_terms:
         priority_terms = _dedupe_casefolded(
             creative_terms
             + required_terms
+            + optional_terms
             + list(item.get("body_matched_terms") or [])
         )
+    elif required_terms:
+        priority_terms = _dedupe_casefolded(required_terms + optional_terms)
     else:
-        priority_terms = required_terms or _dedupe_casefolded(
-            list(item.get("body_matched_terms") or [])
+        priority_terms = _dedupe_casefolded(
+            optional_terms + list(item.get("body_matched_terms") or [])
         )
     anchors = []
     for term in priority_terms:

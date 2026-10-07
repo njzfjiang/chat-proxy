@@ -1232,6 +1232,11 @@ def _rerank_kmlog_results(
     creative_writing = "creative_writing" in set(
         getattr(plan, "matched_domains", ())
     )
+    entity_recollection = (
+        "recollection" in set(getattr(plan, "matched_domains", ()))
+        and not creative_writing
+        and len(required_terms) > 1
+    )
     ranked: list[tuple[int, int, int, int, dict[str, Any]]] = []
     seen_content: dict[str, Any] = {}
     synthetic_filtered = 0
@@ -1286,7 +1291,10 @@ def _rerank_kmlog_results(
                 matched_terms=body_terms,
                 keyword_match=_keyword_match,
             )
-        reject_required_terms = required_terms and not required_matches
+        reject_required_terms = required_terms and (
+            not required_matches
+            or (entity_recollection and bool(missing_required_terms))
+        )
         if creative_match is not None:
             reject_required_terms = not creative_match["accepted"]
         if reject_required_terms:
@@ -1296,6 +1304,8 @@ def _rerank_kmlog_results(
                 "reason": "missing_required_term",
                 "required_terms": required_terms,
             }
+            if entity_recollection:
+                reason["missing_required_terms"] = missing_required_terms
             if creative_match is not None:
                 reason["missing_required_terms"] = missing_required_terms
                 reason["creative_concept_matches"] = creative_match[

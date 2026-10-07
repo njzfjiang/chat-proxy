@@ -214,6 +214,14 @@ def test_entity_acquisition_recollection_uses_entity_and_evidence_terms():
     assert "怎么" not in plan.search_query
 
 
+def test_entity_acquisition_recollection_preserves_specific_object():
+    plan = plan_retrieval("之前谢常流是怎么拿到断剑线索的？")
+
+    assert plan.search_query == "谢常流 断剑 线索 拿到"
+    assert plan.required_terms == ("谢常流", "断剑")
+    assert plan.optional_terms == ("线索", "拿到")
+
+
 def test_entity_acquisition_does_not_promote_generic_pronouns():
     plan = plan_retrieval("之前你是怎么拿到证据的？")
 
@@ -248,6 +256,45 @@ def test_entity_acquisition_recollection_filters_weak_cue_matches():
             "required_terms": ["关颐"],
         },
     ]
+
+
+def test_entity_acquisition_requires_object_and_renders_answer_bearing_context():
+    from chat_proxy.retrieval_evidence import render_kmlog_results
+
+    plan = plan_retrieval("之前谢常流是怎么拿到断剑线索的？")
+    rows = [
+        {
+            "id": 1,
+            "evidence_version": 1,
+            "content_hash": "generic",
+            "matched_excerpt": "谢常流后来抵达京城，继续追查师兄死亡。",
+            "body_matched_terms": ["谢常流"],
+        },
+        {
+            "id": 2,
+            "evidence_version": 1,
+            "content_hash": "direct",
+            "matched_excerpt": (
+                "无关的前情说明。" * 20
+                + "\n- 谢常流在京城找铸剑铺/黑市消息，查到："
+                + "\n  - 宁州断剑的钢材和纹路，只有云欢楼背后的兵器铺能拿到。"
+                + "\n后续还有其他剧情建议。" * 20
+            ),
+            "body_matched_terms": ["谢常流", "断剑", "线索", "拿到"],
+        },
+    ]
+
+    ranked, stats = _rerank_kmlog_results(rows, plan=plan, limit=5)
+    content, render_stats = render_kmlog_results(ranked, total_chars=320)
+
+    assert [item["id"] for item in ranked] == [2]
+    assert stats["entity_filtered"] == 1
+    assert stats["filter_reasons"][0]["missing_required_terms"] == ["断剑"]
+    assert "铸剑铺/黑市消息" in content
+    assert "宁州断剑" in content
+    assert "云欢楼" in content
+    assert "能拿到" in content
+    assert render_stats["selected_after_budget_ids"] == [2]
 
 
 def test_creative_writing_reranker_keeps_a_conservative_coherence_gate():
