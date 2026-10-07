@@ -311,6 +311,7 @@ def build_web_chat_context(
             conversation_id=identity.conversation_id,
             limit=cfg.chat_recent_k,
             before_id=as_of_message_id,
+            before_timestamp=as_of_timestamp,
         )
         base_messages = [
             *recent_context,
@@ -1711,15 +1712,17 @@ def _recent_context_messages(
     conversation_id: str,
     limit: int,
     before_id: int | None = None,
+    before_timestamp: str | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
     safe_limit = max(0, min(limit, 80))
     if safe_limit <= 0:
         rows = []
-    elif before_id is not None:
+    elif before_id is not None or before_timestamp is not None:
         rows = store.get_conversation_messages(
             conversation_id=conversation_id,
             limit=safe_limit,
             before_id=before_id,
+            before_timestamp=before_timestamp,
             kind="chat",
         )
     else:
@@ -1749,6 +1752,7 @@ def _recent_context_messages(
         "chars": _messages_chars(messages),
         "skipped": skipped,
         "before_id": before_id,
+        "before_timestamp": before_timestamp,
     }
     return messages, snapshot
 

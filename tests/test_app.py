@@ -1740,6 +1740,15 @@ async def test_build_context_as_of_cutoff_excludes_future_context(
                 "retrieval_enabled": True,
             },
         )
+        timestamp_only_resp = await client.post(
+            "/build_context",
+            json={
+                "conversation_id": "preview-chat",
+                "user_text": "seed stored in database",
+                "as_of_timestamp": "2026-05-18T00:01:00Z",
+                "retrieval_enabled": False,
+            },
+        )
 
     assert resp.status_code == 200
     payload = resp.json()
@@ -1756,6 +1765,19 @@ async def test_build_context_as_of_cutoff_excludes_future_context(
         "timestamp": "2026-05-18T00:01:00Z",
     }
     assert search_payloads[0]["json"]["before"] == "2026-05-18T00:00:59.999999Z"
+    assert timestamp_only_resp.status_code == 200
+    timestamp_only = timestamp_only_resp.json()
+    assert timestamp_only["messages"] == [
+        {"role": "user", "content": "historical context"},
+        {"role": "user", "content": "seed stored in database"},
+    ]
+    recent = next(
+        component
+        for component in timestamp_only["context_packet"]["components"]
+        if component["name"] == "recent_turns"
+    )
+    assert recent["message_ids"] == [old_id]
+    assert recent["before_timestamp"] == "2026-05-18T00:01:00Z"
 
 
 @pytest.mark.anyio

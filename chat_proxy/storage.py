@@ -844,6 +844,7 @@ LIMIT 1
         conversation_id: str,
         limit: int = 50,
         before_id: int | None = None,
+        before_timestamp: str | None = None,
         after_id: int | None = None,
         kind: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -853,6 +854,9 @@ LIMIT 1
         if kind:
             clauses.append("kind = ?")
             params.append(kind)
+        if before_timestamp is not None:
+            clauses.append("julianday(timestamp) < julianday(?)")
+            params.append(before_timestamp)
         if after_id is not None:
             clauses.append("id > ?")
             params.append(after_id)
