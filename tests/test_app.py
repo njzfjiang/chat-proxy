@@ -505,7 +505,7 @@ async def test_proxy_adds_done_when_upstream_closes_cleanly_without_sentinel(
 
 
 @pytest.mark.anyio
-async def test_proxy_injects_existing_summary_without_mutating_request_json(
+async def test_proxy_injects_summary_and_suppresses_it_for_historical_web_chat(
     tmp_path, upstream_app, monkeypatch
 ):
     db_path = tmp_path / "chat_search.db"
@@ -562,19 +562,44 @@ async def test_proxy_injects_existing_summary_without_mutating_request_json(
                 "messages": [{"role": "user", "content": "hello"}],
             },
         )
+        normal_body = dict(captured_body)
+        historical_resp = await client.post(
+            "/chat",
+            json={
+                "conversation_id": "chat-1",
+                "request_id": "req-historical-summary",
+                "as_of_timestamp": "2026-05-07T00:00:00Z",
+                "user_text": "historical question",
+                "stream": False,
+            },
+        )
+        historical_body = dict(captured_body)
+        historical_debug = await client.get(
+            "/admin/requests?request_id=req-historical-summary"
+        )
 
     assert resp.status_code == 200
-    assert captured_body["messages"][0]["role"] == "system"
-    assert "User prefers concise answers." in captured_body["messages"][0]["content"]
-    assert captured_body["messages"][1:] == [{"role": "user", "content": "hello"}]
+    assert normal_body["messages"][0]["role"] == "system"
+    assert "User prefers concise answers." in normal_body["messages"][0]["content"]
+    assert normal_body["messages"][1:] == [{"role": "user", "content": "hello"}]
+    assert historical_resp.status_code == 200
+    assert all(
+        "User prefers concise answers." not in str(message.get("content") or "")
+        for message in historical_body["messages"]
+    )
+    historical_metadata = historical_debug.json()["requests"][0]["metadata"]
+    assert historical_metadata["rolling_summary_injected"] is False
+    assert historical_metadata["injected_context_snapshot"][
+        "rolling_short_suppressed_reason"
+    ] == "Historical cutoff requested; no as-of summary version is available."
 
     conn = sqlite3.connect(db_path)
-    request_json = json.loads(
-        conn.execute("SELECT request_json FROM requests").fetchone()[0]
-    )
-    metadata = json.loads(
-        conn.execute("SELECT metadata_json FROM requests").fetchone()[0]
-    )
+    request_json, metadata_json = conn.execute(
+        "SELECT request_json, metadata_json FROM requests WHERE request_id != ?",
+        ["req-historical-summary"],
+    ).fetchone()
+    request_json = json.loads(request_json)
+    metadata = json.loads(metadata_json)
     conn.close()
 
     assert request_json["messages"] == [{"role": "user", "content": "hello"}]

@@ -73,6 +73,10 @@ RETRIEVAL_CANDIDATE_CANARY_FLAGS = {
     "retrieval_renderer_v2_enabled": True,
 }
 
+HISTORICAL_SUMMARY_SUPPRESSION_REASON = (
+    "Historical cutoff requested; no as-of summary version is available."
+)
+
 
 def create_app(config: ProxyConfig | None = None) -> FastAPI:
     cfg = config or load_config()
@@ -518,7 +522,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         )
         if has_as_of_cutoff and _include_enabled(include, "rolling_summary", True):
             context_result.snapshot["rolling_short_suppressed_reason"] = (
-                "Historical cutoff requested; no as-of summary version is available."
+                HISTORICAL_SUMMARY_SUPPRESSION_REASON
             )
         summary_text = str(summary_row["summary"]) if summary_row else None
         upstream_body = inject_rolling_summary(
@@ -614,7 +618,17 @@ async def _handle_chat_body(
         return duplicate
     identity = resolve_conversation(incoming_headers, body)
     prepared_body = prepare_request_body_for_upstream(incoming_headers, body)
-    summary_row = store.get_summary(identity.conversation_id)
+    historical_cutoff = _context_has_historical_cutoff(context_snapshot)
+    summary_row = (
+        None if historical_cutoff else store.get_summary(identity.conversation_id)
+    )
+    if historical_cutoff and context_snapshot is not None:
+        context_snapshot = {
+            **context_snapshot,
+            "rolling_short_suppressed_reason": (
+                HISTORICAL_SUMMARY_SUPPRESSION_REASON
+            ),
+        }
     summary_text = str(summary_row["summary"]) if summary_row else None
     upstream_body = inject_rolling_summary(prepared_body.body, summary_text)
     now = _now()
@@ -1045,6 +1059,17 @@ def _injected_context_snapshot(
     snapshot["final_message_count"] = len(final_body.get("messages") or [])
     snapshot["final_chars"] = _message_list_chars(final_body.get("messages"))
     return snapshot
+
+
+def _context_has_historical_cutoff(
+    context_snapshot: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(context_snapshot, dict):
+        return False
+    as_of = context_snapshot.get("as_of")
+    return isinstance(as_of, dict) and any(
+        value is not None and str(value).strip() for value in as_of.values()
+    )
 
 
 def _message_list_chars(messages: Any) -> int:
