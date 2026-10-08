@@ -141,7 +141,7 @@ def load_config() -> ProxyConfig:
         os.getenv("CHAT_PROXY_KMLOG_SEARCH_CHARS_TOTAL", "1200")
     )
     kmlog_search_timeout_seconds = float(
-        os.getenv("CHAT_PROXY_KMLOG_SEARCH_TIMEOUT_SECONDS", "3.0")
+        os.getenv("CHAT_PROXY_KMLOG_SEARCH_TIMEOUT_SECONDS", "5.0")
     )
     recent_goals_enabled = _env_bool("CHAT_PROXY_RECENT_GOALS_ENABLED")
     recent_goals_url = (

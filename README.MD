@@ -390,7 +390,12 @@ CHAT_PROXY_KMLOG_SEARCH_URL=http://127.0.0.1:8013
 CHAT_PROXY_KMLOG_SEARCH_API_KEY=
 CHAT_PROXY_KMLOG_SEARCH_LIMIT=5
 CHAT_PROXY_KMLOG_SEARCH_CHARS_TOTAL=1200
+CHAT_PROXY_KMLOG_SEARCH_TIMEOUT_SECONDS=5.0
 ```
+
+The KMLog timeout covers the complete evidence search request. Keep at least a
+small margin above observed p95 search latency; candidate canaries fall back to
+the active retrieval path when this timeout is exceeded.
 
 The web UI has separate `Retrieve kmlog` and `Inject` toggles. Retrieval results
 always appear in the Debug trace when retrieval is enabled; they are only added
