@@ -2417,12 +2417,19 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
         )
 
     class FakeSearchResponse:
+        def __init__(self, *, include_excluded_count, excluded_count):
+            self.include_excluded_count = include_excluded_count
+            self.excluded_count = excluded_count
+
         def raise_for_status(self):
             return None
 
         def json(self):
-            excerpt = "谢常流在山道旧战场发现了带家纹的断剑，因此拿到线索。"
-            return {
+            excerpt = (
+                "这是此前讨论的设计方案：有人用伪造书信下达伪造命令，"
+                "唐雁止发现药方异常，因此开始怀疑命令来源。"
+            )
+            payload = {
                 "evidence_version": 1,
                 "results": [
                     {
@@ -2432,11 +2439,19 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
                         "matched_excerpt": excerpt,
                         "content_preview": excerpt,
                         "conversation_title": "Creative history",
-                        "body_matched_terms": ["谢常流", "断剑", "线索", "拿到"],
+                        "body_matched_terms": [
+                            "唐雁止",
+                            "伪造命令",
+                            "线索",
+                            "发现",
+                        ],
                         "evidence_version": 1,
                     }
                 ],
             }
+            if self.include_excluded_count:
+                payload["excluded_message_count"] = self.excluded_count
+            return payload
 
     class FakeSearchClient:
         def __init__(self, *args, **kwargs):
@@ -2449,8 +2464,12 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
             return None
 
         def post(self, url, headers=None, json=None):
+            call_index = len(search_payloads)
             search_payloads.append(json)
-            return FakeSearchResponse()
+            return FakeSearchResponse(
+                include_excluded_count=call_index != 1,
+                excluded_count=20 if json.get("exclude_conversation_ids") else 0,
+            )
 
     monkeypatch.setattr("chat_proxy.context_builder.httpx.Client", FakeSearchClient)
     upstream_app.router.routes.clear()
@@ -2473,7 +2492,7 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
             retrieval_candidate_canary_conversation_ids=("canary-chat",),
         )
     )
-    prompt = "之前谢常流是怎么拿到断剑线索的？"
+    prompt = "之前唐雁止是怎么发现伪造命令线索的？"
 
     async with original_async_client(
         transport=ASGITransport(app=app),
@@ -2485,6 +2504,7 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
                 "conversation_id": "canary-chat",
                 "request_id": "req-canary",
                 "user_text": prompt,
+                "as_of_timestamp": "2026-05-18T00:00:00Z",
             },
         )
         await _wait_summary_tasks(app)
@@ -2506,6 +2526,13 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
         "Retrieved chat log snippets" in message["content"]
         for message in captured_bodies[0]["messages"]
     )
+    injected_text = "\n".join(
+        str(message.get("content") or "")
+        for message in captured_bodies[0]["messages"]
+    )
+    assert "伪造书信" in injected_text
+    assert "唐雁止发现药方异常" in injected_text
+    assert "设计方案" in injected_text
     assert all(
         "Retrieved chat log snippets" not in message["content"]
         for message in captured_bodies[1]["messages"]
@@ -2513,6 +2540,8 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
     assert len(search_payloads) == 3
     assert search_payloads[0]["exclude_conversation_ids"] == ["canary-chat"]
     assert search_payloads[1]["exclude_conversation_ids"] == ["canary-chat"]
+    assert search_payloads[0]["before"] == "2026-05-17T23:59:59.999999Z"
+    assert search_payloads[1]["before"] == "2026-05-17T23:59:59.999999Z"
     assert "exclude_conversation_ids" not in search_payloads[2]
     canary_metadata = canary_debug.json()["requests"][0]["metadata"]
     assert canary_metadata["retrieval_candidate_canary"] == {
@@ -2529,6 +2558,18 @@ async def test_retrieval_candidate_canary_injects_only_allowlisted_conversation(
     assert canary_component["renderer"] == "candidate_v2"
     assert canary_component["excluded_conversation_ids"] == ["canary-chat"]
     assert canary_component["excluded_conversation_id_count"] == 1
+    assert canary_component["excluded_message_count"] == 20
+    assert canary_component["excluded_message_count_status"] == "reported"
+    assert canary_component["as_of_timestamp"] == "2026-05-18T00:00:00Z"
+    assert canary_component["before"] == "2026-05-17T23:59:59.999999Z"
+    assert canary_component["final_injected_ids"] == [7553]
+    assert canary_component["items"][0]["timestamp"] == "2026-05-17T12:00:00Z"
+    shadow_candidate = canary_metadata["retrieval_shadow"]["candidate"]
+    assert shadow_candidate["as_of_timestamp"] == "2026-05-18T00:00:00Z"
+    assert shadow_candidate["before"] == "2026-05-17T23:59:59.999999Z"
+    assert shadow_candidate["excluded_message_count"] is None
+    assert shadow_candidate["excluded_message_count_status"] == "not_reported"
+    assert shadow_candidate["items"][0]["timestamp"] == "2026-05-17T12:00:00Z"
     control_metadata = control_debug.json()["requests"][0]["metadata"]
     assert control_metadata["retrieval_candidate_canary"] is None
     assert control_metadata["retrieval_shadow"]["candidate_used_for_answer"] is False

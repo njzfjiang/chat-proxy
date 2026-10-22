@@ -106,6 +106,7 @@ def _trace_projection(component: Mapping[str, Any] | None) -> dict[str, Any]:
         "excluded_conversation_ids",
         "excluded_conversation_id_count",
         "excluded_message_count",
+        "excluded_message_count_status",
         "candidate_pool_ids",
         "backend_selected_ids",
         "backend_result_ids",

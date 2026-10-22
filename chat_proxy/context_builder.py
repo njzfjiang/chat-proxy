@@ -1532,7 +1532,14 @@ def _kmlog_search_messages(
     snapshot["excluded_conversation_id_count"] = data.get(
         "excluded_conversation_id_count", len(excluded_conversation_ids)
     )
-    snapshot["excluded_message_count"] = data.get("excluded_message_count")
+    excluded_message_count = data.get("excluded_message_count")
+    snapshot["excluded_message_count"] = excluded_message_count
+    snapshot["excluded_message_count_status"] = (
+        "reported"
+        if isinstance(excluded_message_count, int)
+        and not isinstance(excluded_message_count, bool)
+        else "not_reported"
+    )
     snapshot["candidate_pool_ids"] = data.get("candidate_ids", [])
     snapshot["backend_candidate_count"] = data.get("candidate_count")
     snapshot["backend_selected_ids"] = data.get("selected_ids", [])
