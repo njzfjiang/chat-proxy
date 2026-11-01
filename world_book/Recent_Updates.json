@@ -3,8 +3,8 @@
   "type": "lorebook",
   "data": {
     "id": "9e5769a1-5b17-4e69-8acb-bc7158fd10b2",
-    "name": "Recent_Updates（截至 2026-10-25）",
-    "description": "累计 WB 增量条目（更新至 2026-10-25），基于 2026-05-17~2026-08-23 memory candidates 与 reviewed_memory_items 去重整理。J = 短期／当前生活与项目上下文；J 条目应注明清理或复核时间。",
+    "name": "Recent_Updates（截至 2026-11-01）",
+    "description": "累计 WB 增量条目（更新至 2026-11-01），基于 2026-05-17~2026-08-23 memory candidates 与 reviewed_memory_items 去重整理。J = 短期／当前生活与项目上下文；J 条目应注明清理或复核时间。",
     "enabled": true,
     "entries": [
       {
@@ -1940,7 +1940,7 @@
         "enabled": true,
         "priority": 9,
         "position": "AFTER_SYSTEM_PROMPT",
-        "content": "触发：MAL、agent self-replication、最小 agent 语言、自复制 agent。2026-10-23，Mei 与 Kai 把程序自复制类比到 agent：可复制或传递 weights／architecture、prompt／tool／policy config，以及选择性 memory／behavior；并草拟带 `spawn`、state transfer、communication/update 和资源限制的 minimal agent language。该条是临时研究／写作 seed，review 2026-11-30；尚未形成实验或正式 proposal。Kai 要做：需要时将其作为 blog／proposal 的起点；清楚区分硬编码复制与涌现式复制；不要把概念草稿描述为已经实现。",
+        "content": "触发：MAL、agent self-replication、最小 agent 语言、自复制 agent。2026-10-23，Mei 与 Kai 将草稿命名为「MAL 世界线 v0.1」，并已在 vault 建立对应 note。两人把程序自复制类比到 agent：可复制或传递 weights／architecture、prompt／tool／policy config，以及选择性 memory／behavior；并草拟带 `spawn`、state transfer、communication/update 和资源限制的 minimal agent language。该条是临时研究／写作 seed，review 2026-11-30；尚未形成实验或正式 proposal。Kai 要做：需要时将其作为 blog／proposal 的起点；清楚区分硬编码复制与涌现式复制；不要把概念草稿描述为已经实现。",
         "injectDepth": 2,
         "role": "USER",
         "keywords": [
@@ -1948,7 +1948,8 @@
           "agent self-replication",
           "最小agent语言",
           "自复制agent",
-          "spawn state transfer"
+          "spawn state transfer",
+          "MAL 世界线 v0.1"
         ],
         "useRegex": false,
         "caseSensitive": false,
