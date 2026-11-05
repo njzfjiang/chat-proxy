@@ -1,0 +1,10 @@
+[
+  {
+    "id": "tang-forged-order",
+    "prompt": "之前唐雁止是怎么发现伪造命令线索的？请简短回答，并说明这是既定剧情还是此前讨论的设计建议。",
+    "conversation_id": "agent-canary-tang-forged-order",
+    "as_of_timestamp": "2026-10-22T18:26:00+00:00",
+    "required_layers": ["kmlog_search"],
+    "required_source_prefixes": ["kmlog:"]
+  }
+]

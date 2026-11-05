@@ -320,6 +320,8 @@ already-injected context. ASCII trigger keywords use token-boundary matching, so
 `review` does not match `preview`; World Book debug also includes
 `trigger_matches` with the matched keyword and input span. The endpoint is
 preview-only: it does not call the LLM, persist turns, or update summaries.
+`debug.layer_status` exposes non-content component state such as enabled,
+injected, result/message counts, skipped reason, and error for local diagnosis.
 `chatlog_history` and `health_data` are noted in debug if requested, but they
 are not implemented in this thin preview endpoint yet.
 
@@ -343,6 +345,58 @@ agent_managed
 Use `read_only` with `allowed_tool_groups=["context_read"]` for context preview.
 State-changing tools remain agent/action-node territory and should require
 confirmation.
+
+### Isolated retrieval agent canary
+
+`agent_canary` is an optional single-agent harness for testing the existing
+context pipeline. Its only tool calls `POST /build_context`; it does not call
+`POST /chat`, persist turns, update summaries, or write to the memory database.
+The preview request explicitly enables retrieval injection, routing, query
+planning, and renderer v2 without changing the proxy's process-wide defaults.
+Before contacting the model provider, the runner prefetches context and checks
+each manifest case's required layers and source prefixes. The fixed seed
+requires injected `kmlog_search` evidence, so a stopped or misconfigured KMLog
+service fails locally instead of producing a misleading model result.
+The runner records source IDs, context hash, latency, structured answer, model
+usage, and the exact final visible evidence as one JSON object per case. Each
+visible message includes its character count and SHA-256 hash.
+
+Use Python 3.11 or newer and install the optional dependency separately:
+
+```powershell
+python -m venv .venv-agent
+.\.venv-agent\Scripts\python -m pip install -r requirements.txt
+.\.venv-agent\Scripts\python -m pip install -r requirements-agent.txt
+```
+
+The runner loads the repository `.env` automatically. Set the
+`AGENT_CANARY_*` variables from `.env.example` only when the canary needs a
+different proxy, model, API key, or upstream base. Empty values fall back to
+the corresponding `CHAT_PROXY_*` variables. Run one explicitly reviewed
+prompt:
+
+```powershell
+.\.venv-agent\Scripts\python -m agent_canary.runner `
+  --prompt "Which prior evidence answers this question?" `
+  --conversation-id "agent-canary-manual"
+```
+
+Or run the reviewed fixed manifest:
+
+```powershell
+.\.venv-agent\Scripts\python -m agent_canary.runner `
+  --manifest agent_canary\seeds.json `
+  --output benchmark_outputs\agent_canary\manual-review.jsonl
+```
+
+The manifest sends its prompt and the proxy-rendered evidence to the configured
+model provider. Review its exact contents before every real run. Unit tests use
+PydanticAI's `TestModel` and make no external model request. Without `--output`,
+the runner creates a timestamped JSONL file under
+`benchmark_outputs/agent_canary/`; this directory is git-ignored. Artifacts
+contain private prompt and evidence text, so treat them as sensitive local
+evaluation data. API keys are never included. Preflight and model failures are
+also recorded with their stage and error details.
 
 When clients send `user_text`, the proxy builds the upstream short-context
 window from SQLite instead of trusting the browser's current view. It prepends up

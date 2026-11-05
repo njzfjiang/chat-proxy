@@ -1,0 +1,3 @@
+# Install requirements.txt first; this file keeps the canary dependency optional.
+pydantic-ai-slim[openai]==2.63.0
+python-dotenv==1.2.2
