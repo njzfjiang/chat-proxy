@@ -1495,6 +1495,9 @@ async def test_build_context_previews_messages_without_calling_upstream(tmp_path
         f"message:{older_message_id}"
     ]
     assert payload["debug"]["source_ids"]["rolling_short"] == ["rolling_summary:1"]
+    assert payload["debug"]["layer_status"]["current_user"] == {
+        "message_count": 1
+    }
     assert payload["context_packet"]["mode"] == "db_recent_turns"
     assert payload["context_packet"]["messages"] == payload["messages"]
     assert payload["context_packet"]["final_message_count"] == 3

@@ -1269,6 +1269,7 @@ def _context_builder_debug(
             if component.get("name") and int(component.get("message_count") or 0) > 0
         ],
         "source_ids": _context_builder_source_ids(components),
+        "layer_status": _context_builder_layer_status(components),
         "token_estimates": {
             "total": _rough_tokens(int(snapshot.get("final_chars") or 0)),
             "injected_total": sum(injected_by_layer.values()),
@@ -1298,6 +1299,31 @@ def _context_builder_source_ids(
     for index, component in enumerate(components):
         layer = str(component.get("name") or f"component_{index}")
         out[layer] = _component_source_ids(component)
+    return out
+
+
+def _context_builder_layer_status(
+    components: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    fields = (
+        "enabled",
+        "inject",
+        "router_enabled",
+        "query_planner_enabled",
+        "renderer",
+        "result_count",
+        "message_count",
+        "error",
+        "skipped_reason",
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for index, component in enumerate(components):
+        layer = str(component.get("name") or f"component_{index}")
+        out[layer] = {
+            field: component[field]
+            for field in fields
+            if field in component
+        }
     return out
 
 
