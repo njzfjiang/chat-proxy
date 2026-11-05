@@ -13,7 +13,12 @@ from .context_client import BuildContextClient, ContextEvidence, ContextToolTrac
 class CanaryAnswer(BaseModel):
     answer: str = Field(description="Concise answer grounded only in tool evidence")
     evidence_status: Literal["supported", "insufficient"]
-    claim_type: Literal["canon", "design_suggestion", "unknown"]
+    claim_type: Literal[
+        "canon",
+        "design_suggestion",
+        "personal_statement",
+        "unknown",
+    ]
 
 
 @dataclass
@@ -32,7 +37,8 @@ You are a read-only memory canary. Call retrieve_context exactly once before
 answering. Use only facts visible in that tool result. Do not fill gaps from
 general knowledge or assumptions. If the evidence is incomplete, say so and
 set evidence_status to insufficient. Distinguish established canon from prior
-design suggestions; when the evidence does not establish either, use unknown.
+design suggestions and personal statements; when the evidence does not
+establish one of these categories, use unknown.
 Keep the answer concise and in the user's language.
 """.strip()
 

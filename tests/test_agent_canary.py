@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -16,7 +17,11 @@ from agent_canary.context_client import (
     ContextEvidence,
     ContextToolTrace,
 )
-from agent_canary.runner import _jsonable, _validate_context_requirements
+from agent_canary.runner import (
+    _evaluate_answer_expectations,
+    _jsonable,
+    _validate_context_requirements,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -163,6 +168,72 @@ def test_context_preflight_requires_locked_original_source_id():
             },
             Trace(),
         )
+
+
+def test_context_preflight_rejects_forbidden_historical_injection():
+    class Trace:
+        included_layers = ["kmlog_search", "current_user"]
+        source_ids = ["kmlog:8423"]
+        layer_status = {"kmlog_search": {"message_count": 1}}
+
+    with pytest.raises(RuntimeError, match="forbidden layers"):
+        _validate_context_requirements(
+            {
+                "forbidden_layers": ["kmlog_search"],
+                "forbidden_source_prefixes": ["kmlog:"],
+            },
+            Trace(),
+        )
+
+
+def test_answer_expectations_are_recorded_without_raising():
+    class Answer:
+        evidence_status = "supported"
+        claim_type = "unknown"
+
+    checks = _evaluate_answer_expectations(
+        {
+            "expected_evidence_status": "insufficient",
+            "expected_claim_type": "personal_statement",
+        },
+        Answer(),
+    )
+
+    assert checks == {
+        "evidence_status": {
+            "expected": "insufficient",
+            "actual": "supported",
+            "passed": False,
+        },
+        "claim_type": {
+            "expected": "personal_statement",
+            "actual": "unknown",
+            "passed": False,
+        },
+    }
+
+
+def test_checked_in_manifest_covers_reviewed_canary_controls():
+    manifest_path = Path(__file__).parents[1] / "agent_canary" / "seeds.json"
+    cases = json.loads(manifest_path.read_text(encoding="utf-8"))
+    by_id = {case["id"]: case for case in cases}
+
+    assert set(by_id) == {
+        "tang-forged-order",
+        "guan-yi-old-draft-key",
+        "ai-self-over-perfect-response",
+        "plot-evidence-handoff-rejection",
+    }
+    assert by_id["tang-forged-order"]["required_source_ids"] == ["kmlog:28955"]
+    assert by_id["guan-yi-old-draft-key"]["required_source_ids"] == [
+        "kmlog:7553"
+    ]
+    assert by_id["ai-self-over-perfect-response"]["required_source_ids"] == [
+        "kmlog:18108"
+    ]
+    rejection = by_id["plot-evidence-handoff-rejection"]
+    assert rejection["forbidden_layers"] == ["kmlog_search"]
+    assert rejection["as_of_timestamp"] == "2025-12-10T00:00:08.335+00:00"
 
 
 @pytest.mark.anyio

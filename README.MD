@@ -400,6 +400,13 @@ contain private prompt and evidence text, so treat them as sensitive local
 evaluation data. API keys are never included. Preflight and model failures are
 also recorded with their stage and error details.
 
+The checked-in manifest contains four reviewed controls: a design-suggestion
+positive, a long old-draft positive, a personal-statement positive, and an
+as-of rejection case. Positive cases lock their original KMLog source IDs;
+the rejection case forbids historical chat injection. Expected answer labels
+are recorded as non-blocking `expectation_checks` in the artifact, while source
+locks and forbidden retrieval remain fail-closed preflight requirements.
+
 When clients send `user_text`, the proxy builds the upstream short-context
 window from SQLite instead of trusting the browser's current view. It prepends up
 to `CHAT_PROXY_CHAT_RECENT_K` recent `chat` messages from the same

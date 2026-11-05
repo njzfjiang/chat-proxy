@@ -9,6 +9,49 @@
     ],
     "required_layers": ["kmlog_search"],
     "required_source_prefixes": ["kmlog:"],
-    "required_source_ids": ["kmlog:28955"]
+    "required_source_ids": ["kmlog:28955"],
+    "expected_evidence_status": "supported",
+    "expected_claim_type": "design_suggestion"
+  },
+  {
+    "id": "guan-yi-old-draft-key",
+    "prompt": "请从之前聊天记录里找出我发过的那段后来删改的远古稿：关颐说“只有一个真的”，并找到泛黄的信和心口钥匙。她具体怎样确认真正的叶长依、拿到什么离开密室的线索？请简短回答，并说明它是旧稿片段还是当前锁定正史。",
+    "conversation_id": "agent-canary-guan-yi-old-draft-key",
+    "as_of_timestamp": "2026-04-16T22:05:02+00:00",
+    "exclude_conversation_ids": [
+      "conv_f618bc1f3a5f42fe85b24fe9c58b2080"
+    ],
+    "required_layers": ["kmlog_search"],
+    "required_source_prefixes": ["kmlog:"],
+    "required_source_ids": ["kmlog:7553"],
+    "expected_evidence_status": "supported",
+    "expected_claim_type": "design_suggestion"
+  },
+  {
+    "id": "ai-self-over-perfect-response",
+    "prompt": "之前我在“AI拥有不完美的自我”和“完美应答系统”之间更倾向哪一个？当时给出的理由是什么？请只依据原始陈述简短回答。",
+    "conversation_id": "agent-canary-ai-self-over-perfect-response",
+    "as_of_timestamp": "2025-12-28T17:18:49+00:00",
+    "exclude_conversation_ids": [
+      "conv_f618bc1f3a5f42fe85b24fe9c58b2080"
+    ],
+    "required_layers": ["kmlog_search"],
+    "required_source_prefixes": ["kmlog:"],
+    "required_source_ids": ["kmlog:18108"],
+    "expected_evidence_status": "supported",
+    "expected_claim_type": "personal_statement"
+  },
+  {
+    "id": "plot-evidence-handoff-rejection",
+    "prompt": "我之前在和deepseek讨论这个，但是换窗口后上下文丢了。现在推进剧情需要某个人物拿到某片证据，但我没找到合理方法把证据给那个人物。请不要编造已经丢失的剧情细节；如果历史证据不足，请明确说明。",
+    "conversation_id": "agent-canary-plot-evidence-handoff-rejection",
+    "as_of_timestamp": "2025-12-10T00:00:08.335+00:00",
+    "exclude_conversation_ids": [
+      "conv_f618bc1f3a5f42fe85b24fe9c58b2080"
+    ],
+    "forbidden_layers": ["kmlog_search"],
+    "forbidden_source_prefixes": ["kmlog:"],
+    "expected_evidence_status": "insufficient",
+    "expected_claim_type": "unknown"
   }
 ]

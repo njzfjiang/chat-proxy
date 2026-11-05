@@ -101,6 +101,47 @@ def _validate_context_requirements(case: dict[str, Any], trace: Any) -> None:
             + ", ".join(missing_source_ids)
         )
 
+    forbidden_layers = [
+        str(layer)
+        for layer in case.get("forbidden_layers", [])
+        if str(layer) in trace.included_layers
+    ]
+    if forbidden_layers:
+        raise RuntimeError(
+            "Context preflight included forbidden layers: "
+            + ", ".join(forbidden_layers)
+        )
+
+    forbidden_prefixes = [
+        str(prefix)
+        for prefix in case.get("forbidden_source_prefixes", [])
+        if any(source_id.startswith(str(prefix)) for source_id in trace.source_ids)
+    ]
+    if forbidden_prefixes:
+        raise RuntimeError(
+            "Context preflight included forbidden source prefixes: "
+            + ", ".join(forbidden_prefixes)
+        )
+
+
+def _evaluate_answer_expectations(
+    case: dict[str, Any],
+    answer: Any,
+) -> dict[str, dict[str, Any]]:
+    checks: dict[str, dict[str, Any]] = {}
+    for field in ("evidence_status", "claim_type"):
+        expected_key = f"expected_{field}"
+        if expected_key not in case:
+            continue
+        expected = str(case[expected_key])
+        actual = str(getattr(answer, field))
+        checks[field] = {
+            "expected": expected,
+            "actual": actual,
+            "passed": actual == expected,
+        }
+    return checks
+
 
 async def _run(args: argparse.Namespace) -> int:
     base_url = os.getenv("AGENT_CANARY_PROXY_BASE", "http://127.0.0.1:8787")
@@ -162,6 +203,7 @@ async def _run(args: argparse.Namespace) -> int:
                 raise RuntimeError(
                     f"Expected exactly one context tool call, got {len(deps.tool_traces)}"
                 )
+            expectation_checks = _evaluate_answer_expectations(case, result.output)
             record = {
                 "schema_version": ARTIFACT_SCHEMA_VERSION,
                 "run_id": run_id,
@@ -176,6 +218,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "model": model_name,
                 "destination": redact_destination(upstream_base),
                 "answer": result.output.model_dump(mode="json"),
+                "expectation_checks": expectation_checks,
                 "evidence": evidence_snapshot(prefetched_context[0]),
                 "tool_traces": [
                     trace.model_dump(mode="json") for trace in deps.tool_traces
