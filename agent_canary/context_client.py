@@ -57,6 +57,7 @@ class BuildContextClient:
         prompt: str,
         conversation_id: str,
         as_of_timestamp: str | None = None,
+        exclude_conversation_ids: list[str] | None = None,
     ) -> tuple[ContextEvidence, ContextToolTrace]:
         body: dict[str, Any] = {
             "client_id": "pydantic-agent-canary",
@@ -77,6 +78,15 @@ class BuildContextClient:
         }
         if as_of_timestamp:
             body["as_of_timestamp"] = as_of_timestamp
+        exclusions = list(
+            dict.fromkeys(
+                item.strip()
+                for item in [conversation_id, *(exclude_conversation_ids or [])]
+                if item and item.strip()
+            )
+        )
+        if exclusions:
+            body["retrieval_exclude_conversation_ids"] = exclusions
 
         started = time.perf_counter()
         if self.http_client is not None:

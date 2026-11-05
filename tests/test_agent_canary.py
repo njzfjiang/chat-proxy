@@ -47,6 +47,10 @@ async def test_agent_calls_read_only_context_once_and_records_server_sources():
         assert body["retrieval_router_enabled"] is True
         assert body["retrieval_query_planner_enabled"] is True
         assert body["retrieval_renderer_v2_enabled"] is True
+        assert body["retrieval_exclude_conversation_ids"] == [
+            "agent-canary-test",
+            "old-test-conversation",
+        ]
         return httpx.Response(
             200,
             json={
@@ -80,6 +84,7 @@ async def test_agent_calls_read_only_context_once_and_records_server_sources():
             prompt="What happened?",
             conversation_id="agent-canary-test",
             as_of_timestamp="2026-10-22T18:26:00+00:00",
+            exclude_conversation_ids=["old-test-conversation"],
         )
         result = await build_agent(TestModel()).run("What happened?", deps=deps)
 
@@ -131,6 +136,30 @@ def test_context_preflight_requires_injected_kmlog_evidence():
             {
                 "required_layers": ["kmlog_search"],
                 "required_source_prefixes": ["kmlog:"],
+                "required_source_ids": ["kmlog:28955"],
+            },
+            Trace(),
+        )
+
+
+def test_context_preflight_requires_locked_original_source_id():
+    class Trace:
+        included_layers = ["kmlog_search", "current_user"]
+        source_ids = ["kmlog:49831"]
+        layer_status = {
+            "kmlog_search": {
+                "enabled": True,
+                "inject": True,
+                "message_count": 1,
+            }
+        }
+
+    with pytest.raises(RuntimeError, match="kmlog:28955"):
+        _validate_context_requirements(
+            {
+                "required_layers": ["kmlog_search"],
+                "required_source_prefixes": ["kmlog:"],
+                "required_source_ids": ["kmlog:28955"],
             },
             Trace(),
         )

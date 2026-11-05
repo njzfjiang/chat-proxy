@@ -90,6 +90,17 @@ def _validate_context_requirements(case: dict[str, Any], trace: Any) -> None:
             + ", ".join(missing_prefixes)
         )
 
+    missing_source_ids = [
+        str(source_id)
+        for source_id in case.get("required_source_ids", [])
+        if str(source_id) not in trace.source_ids
+    ]
+    if missing_source_ids:
+        raise RuntimeError(
+            "Context preflight missing required source IDs: "
+            + ", ".join(missing_source_ids)
+        )
+
 
 async def _run(args: argparse.Namespace) -> int:
     base_url = os.getenv("AGENT_CANARY_PROXY_BASE", "http://127.0.0.1:8787")
@@ -109,6 +120,17 @@ async def _run(args: argparse.Namespace) -> int:
 
     for case in cases:
         prompt = str(case["prompt"])
+        conversation_id = str(case["conversation_id"])
+        exclude_conversation_ids = list(
+            dict.fromkeys(
+                str(item).strip()
+                for item in [
+                    conversation_id,
+                    *case.get("exclude_conversation_ids", []),
+                ]
+                if str(item).strip()
+            )
+        )
         context_client = BuildContextClient(base_url, timeout)
         started_at = utc_now()
         stage = "preflight"
@@ -116,8 +138,9 @@ async def _run(args: argparse.Namespace) -> int:
         try:
             prefetched_context = await context_client.retrieve(
                 prompt=prompt,
-                conversation_id=str(case["conversation_id"]),
+                conversation_id=conversation_id,
                 as_of_timestamp=case.get("as_of_timestamp"),
+                exclude_conversation_ids=exclude_conversation_ids,
             )
             _validate_context_requirements(case, prefetched_context[1])
             stage = "agent"
@@ -126,6 +149,7 @@ async def _run(args: argparse.Namespace) -> int:
                 prompt=prompt,
                 conversation_id=str(case["conversation_id"]),
                 as_of_timestamp=case.get("as_of_timestamp"),
+                exclude_conversation_ids=exclude_conversation_ids,
                 prefetched_context=prefetched_context,
             )
             result = await agent.run(
@@ -148,6 +172,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "prompt": prompt,
                 "conversation_id": deps.conversation_id,
                 "as_of_timestamp": deps.as_of_timestamp,
+                "exclude_conversation_ids": exclude_conversation_ids,
                 "model": model_name,
                 "destination": redact_destination(upstream_base),
                 "answer": result.output.model_dump(mode="json"),
@@ -182,6 +207,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "prompt": prompt,
                 "conversation_id": str(case.get("conversation_id") or ""),
                 "as_of_timestamp": case.get("as_of_timestamp"),
+                "exclude_conversation_ids": exclude_conversation_ids,
                 "model": model_name,
                 "destination": redact_destination(upstream_base),
                 "error": {"type": type(exc).__name__, "message": str(exc)},

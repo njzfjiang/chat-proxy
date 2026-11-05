@@ -1313,6 +1313,7 @@ def _context_builder_layer_status(
         "renderer",
         "result_count",
         "message_count",
+        "excluded_message_count",
         "error",
         "skipped_reason",
     )

@@ -22,6 +22,7 @@ class AgentDeps:
     prompt: str
     conversation_id: str
     as_of_timestamp: str | None = None
+    exclude_conversation_ids: list[str] = field(default_factory=list)
     tool_traces: list[ContextToolTrace] = field(default_factory=list)
     prefetched_context: tuple[ContextEvidence, ContextToolTrace] | None = None
 
@@ -57,6 +58,7 @@ def build_agent(model: Model | str) -> Agent[AgentDeps, CanaryAnswer]:
                 prompt=ctx.deps.prompt,
                 conversation_id=ctx.deps.conversation_id,
                 as_of_timestamp=ctx.deps.as_of_timestamp,
+                exclude_conversation_ids=ctx.deps.exclude_conversation_ids,
             )
         ctx.deps.tool_traces.append(trace)
         return evidence

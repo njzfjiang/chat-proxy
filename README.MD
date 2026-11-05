@@ -355,8 +355,10 @@ The preview request explicitly enables retrieval injection, routing, query
 planning, and renderer v2 without changing the proxy's process-wide defaults.
 Before contacting the model provider, the runner prefetches context and checks
 each manifest case's required layers and source prefixes. The fixed seed
-requires injected `kmlog_search` evidence, so a stopped or misconfigured KMLog
-service fails locally instead of producing a misleading model result.
+requires injected `kmlog_search` evidence and its original source message. It
+also excludes prior test-answer conversations before KMLog top-k selection, so
+a stopped service, missing original source, or answer-echo-only result fails
+locally instead of producing a misleading model result.
 The runner records source IDs, context hash, latency, structured answer, model
 usage, and the exact final visible evidence as one JSON object per case. Each
 visible message includes its character count and SHA-256 hash.
