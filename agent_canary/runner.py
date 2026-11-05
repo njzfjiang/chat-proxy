@@ -201,7 +201,11 @@ async def _run(args: argparse.Namespace) -> int:
         started_at = utc_now()
         stage = "preflight"
         prefetched_context = None
+        case_timeout: float | None = None
         try:
+            case_timeout = float(case.get("timeout_seconds", timeout))
+            if case_timeout <= 0:
+                raise ValueError("timeout_seconds must be positive")
             prefetched_context = await context_client.retrieve(
                 prompt=prompt,
                 conversation_id=conversation_id,
@@ -222,9 +226,6 @@ async def _run(args: argparse.Namespace) -> int:
                 exclude_conversation_ids=exclude_conversation_ids,
                 prefetched_context=prefetched_context,
             )
-            case_timeout = float(case.get("timeout_seconds", timeout))
-            if case_timeout <= 0:
-                raise ValueError("timeout_seconds must be positive")
             result = await agent.run(
                 prompt,
                 deps=deps,
@@ -249,6 +250,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "exclude_conversation_ids": exclude_conversation_ids,
                 "model": model_name,
                 "destination": redact_destination(upstream_base),
+                "timeout_seconds": case_timeout,
                 "answer": result.output.model_dump(mode="json"),
                 "expectation_checks": expectation_checks,
                 "evidence": evidence_snapshot(prefetched_context[0]),
@@ -285,6 +287,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "exclude_conversation_ids": exclude_conversation_ids,
                 "model": model_name,
                 "destination": redact_destination(upstream_base),
+                "timeout_seconds": case_timeout,
                 "error": {"type": type(exc).__name__, "message": str(exc)},
             }
             if prefetched_context is not None:

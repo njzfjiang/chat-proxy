@@ -297,6 +297,7 @@ def test_checked_in_manifest_covers_reviewed_canary_controls():
         "只有一个真的",
         "匣中有门，心中有钥",
     ]
+    assert by_id["guan-yi-old-draft-key"]["timeout_seconds"] == 30
     assert by_id["ai-self-over-perfect-response"]["required_source_ids"] == [
         "kmlog:18108"
     ]

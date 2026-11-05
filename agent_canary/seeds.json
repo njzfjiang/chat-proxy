@@ -29,6 +29,7 @@
       "只有一个真的",
       "匣中有门，心中有钥"
     ],
+    "timeout_seconds": 30,
     "expected_evidence_status": "supported",
     "expected_claim_type": "design_suggestion"
   },
