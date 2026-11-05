@@ -237,6 +237,22 @@ def test_entity_acquisition_precedes_narrative_provenance_suffix():
     assert "剧情" not in plan.required_terms
 
 
+def test_quoted_recollection_anchors_precede_generic_evidence_terms():
+    plan = plan_retrieval(
+        "之前关颐是怎么拿到钥匙线索的？"
+        "请从远古稿中结合“后来改稿这一段基本都删掉了”"
+        "“只有一个真的”“匣中有门，心中有钥”回答。"
+    )
+
+    assert plan.search_query.split()[:3] == [
+        "后来改稿这一段基本都删掉了",
+        "只有一个真的",
+        "匣中有门，心中有钥",
+    ]
+    assert plan.required_terms == ("关颐", "钥匙")
+    assert plan.optional_terms == ("线索", "拿到")
+
+
 def test_entity_acquisition_does_not_promote_generic_pronouns():
     plan = plan_retrieval("之前你是怎么拿到证据的？")
 

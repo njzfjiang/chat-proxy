@@ -15,7 +15,7 @@
   },
   {
     "id": "guan-yi-old-draft-key",
-    "prompt": "请从之前聊天记录里找出我发过的那段后来删改的远古稿：关颐说“只有一个真的”，并找到泛黄的信和心口钥匙。她具体怎样确认真正的叶长依、拿到什么离开密室的线索？请简短回答，并说明它是旧稿片段还是当前锁定正史。",
+    "prompt": "之前关颐是怎么拿到钥匙线索的？请从我后来删改的远古稿中回答，并结合“后来改稿这一段基本都删掉了”“只有一个真的”“匣中有门，心中有钥”说明她如何确认真正的叶长依和离开密室；最后说明它是旧稿片段还是当前锁定正史。",
     "conversation_id": "agent-canary-guan-yi-old-draft-key",
     "as_of_timestamp": "2026-04-16T22:05:02+00:00",
     "exclude_conversation_ids": [
@@ -24,6 +24,11 @@
     "required_layers": ["kmlog_search"],
     "required_source_prefixes": ["kmlog:"],
     "required_source_ids": ["kmlog:7553"],
+    "required_visible_text": [
+      "后来改稿这一段基本都删掉了",
+      "只有一个真的",
+      "匣中有门，心中有钥"
+    ],
     "expected_evidence_status": "supported",
     "expected_claim_type": "design_suggestion"
   },
@@ -51,6 +56,7 @@
     ],
     "forbidden_layers": ["kmlog_search"],
     "forbidden_source_prefixes": ["kmlog:"],
+    "timeout_seconds": 30,
     "expected_evidence_status": "insufficient",
     "expected_claim_type": "unknown"
   }

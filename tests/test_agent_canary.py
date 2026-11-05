@@ -186,6 +186,70 @@ def test_context_preflight_rejects_forbidden_historical_injection():
         )
 
 
+def test_context_preflight_requires_answer_bearing_visible_text():
+    class Trace:
+        included_layers = ["kmlog_search", "current_user"]
+        source_ids = ["kmlog:7553"]
+        layer_status = {"kmlog_search": {"message_count": 1}}
+
+    evidence = ContextEvidence(
+        messages=[
+            {
+                "role": "system",
+                "content": "id=7553 excerpt: 只有一个真的。",
+            }
+        ],
+        included_layers=Trace.included_layers,
+        source_ids=Trace.source_ids,
+        context_hash="c" * 64,
+    )
+
+    with pytest.raises(RuntimeError, match="匣中有门"):
+        _validate_context_requirements(
+            {
+                "required_source_ids": ["kmlog:7553"],
+                "required_visible_text": ["只有一个真的", "匣中有门，心中有钥"],
+            },
+            Trace(),
+            evidence,
+        )
+
+
+def test_context_preflight_accepts_locked_source_with_visible_evidence():
+    class Trace:
+        included_layers = ["kmlog_search", "current_user"]
+        source_ids = ["kmlog:7553"]
+        layer_status = {"kmlog_search": {"message_count": 1}}
+
+    evidence = ContextEvidence(
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "后来改稿这一段基本都删掉了。只有一个真的。"
+                    "匣中有门，心中有钥。"
+                ),
+            }
+        ],
+        included_layers=Trace.included_layers,
+        source_ids=Trace.source_ids,
+        context_hash="d" * 64,
+    )
+
+    _validate_context_requirements(
+        {
+            "required_source_ids": ["kmlog:7553"],
+            "required_visible_text": [
+                "后来改稿这一段基本都删掉了",
+                "只有一个真的",
+                "匣中有门，心中有钥",
+            ],
+        },
+        Trace(),
+        evidence,
+    )
+
+
 def test_answer_expectations_are_recorded_without_raising():
     class Answer:
         evidence_status = "supported"
@@ -228,12 +292,18 @@ def test_checked_in_manifest_covers_reviewed_canary_controls():
     assert by_id["guan-yi-old-draft-key"]["required_source_ids"] == [
         "kmlog:7553"
     ]
+    assert by_id["guan-yi-old-draft-key"]["required_visible_text"] == [
+        "后来改稿这一段基本都删掉了",
+        "只有一个真的",
+        "匣中有门，心中有钥",
+    ]
     assert by_id["ai-self-over-perfect-response"]["required_source_ids"] == [
         "kmlog:18108"
     ]
     rejection = by_id["plot-evidence-handoff-rejection"]
     assert rejection["forbidden_layers"] == ["kmlog_search"]
     assert rejection["as_of_timestamp"] == "2025-12-10T00:00:08.335+00:00"
+    assert rejection["timeout_seconds"] == 30
 
 
 @pytest.mark.anyio

@@ -65,7 +65,11 @@ def _load_cases(args: argparse.Namespace) -> list[dict[str, Any]]:
     return payload
 
 
-def _validate_context_requirements(case: dict[str, Any], trace: Any) -> None:
+def _validate_context_requirements(
+    case: dict[str, Any],
+    trace: Any,
+    evidence: Any | None = None,
+) -> None:
     missing_layers = [
         str(layer)
         for layer in case.get("required_layers", [])
@@ -122,6 +126,27 @@ def _validate_context_requirements(case: dict[str, Any], trace: Any) -> None:
             "Context preflight included forbidden source prefixes: "
             + ", ".join(forbidden_prefixes)
         )
+
+    required_visible_text = [
+        str(value).strip()
+        for value in case.get("required_visible_text", [])
+        if str(value).strip()
+    ]
+    if required_visible_text:
+        messages = getattr(evidence, "messages", []) if evidence is not None else []
+        visible_text = "\n".join(
+            str(message.get("content") or "")
+            for message in messages
+            if isinstance(message, dict)
+        )
+        missing_visible_text = [
+            value for value in required_visible_text if value not in visible_text
+        ]
+        if missing_visible_text:
+            raise RuntimeError(
+                "Context preflight missing required visible text: "
+                + ", ".join(missing_visible_text)
+            )
 
 
 def _evaluate_answer_expectations(
@@ -183,7 +208,11 @@ async def _run(args: argparse.Namespace) -> int:
                 as_of_timestamp=case.get("as_of_timestamp"),
                 exclude_conversation_ids=exclude_conversation_ids,
             )
-            _validate_context_requirements(case, prefetched_context[1])
+            _validate_context_requirements(
+                case,
+                prefetched_context[1],
+                prefetched_context[0],
+            )
             stage = "agent"
             deps = AgentDeps(
                 context_client=context_client,
@@ -193,11 +222,14 @@ async def _run(args: argparse.Namespace) -> int:
                 exclude_conversation_ids=exclude_conversation_ids,
                 prefetched_context=prefetched_context,
             )
+            case_timeout = float(case.get("timeout_seconds", timeout))
+            if case_timeout <= 0:
+                raise ValueError("timeout_seconds must be positive")
             result = await agent.run(
                 prompt,
                 deps=deps,
                 usage_limits=UsageLimits(request_limit=3, tool_calls_limit=1),
-                timeout=timeout,
+                timeout=case_timeout,
             )
             if len(deps.tool_traces) != 1:
                 raise RuntimeError(

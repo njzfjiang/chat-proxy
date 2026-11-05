@@ -457,7 +457,10 @@ def plan_retrieval(text: str) -> RetrievalPlan:
         reasons.append("no historical retrieval signal matched")
 
     if SOURCE_CHAT_HISTORY in sources:
-        terms.extend(_quoted_terms(cleaned))
+        # Explicitly quoted anchors are usually the user's highest-precision
+        # clue. Keep them first so KMLog's bounded evidence windows cannot be
+        # consumed by generic recollection terms before reaching the quote.
+        terms = [*_quoted_terms(cleaned), *terms]
         discussion_sources = {
             value.casefold() for value in _discussion_source_terms(cleaned)
         }
