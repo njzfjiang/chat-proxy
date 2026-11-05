@@ -10,7 +10,7 @@ from pydantic_ai import models
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from agent_canary.agent import AgentDeps, build_agent
+from agent_canary.agent import AgentDeps, CanaryAnswer, build_agent
 from agent_canary.artifacts import append_jsonl, evidence_snapshot, redact_destination
 from agent_canary.context_client import (
     BuildContextClient,
@@ -122,6 +122,16 @@ def test_run_usage_property_is_json_serializable():
     payload = _jsonable(RunUsage(requests=2, input_tokens=10, output_tokens=4))
     assert isinstance(payload, dict)
     assert payload["requests"] == 2
+
+
+def test_canary_answer_supports_old_draft_claims():
+    answer = CanaryAnswer(
+        answer="这是后来删改的旧稿片段。",
+        evidence_status="supported",
+        claim_type="old_draft",
+    )
+
+    assert answer.claim_type == "old_draft"
 
 
 def test_context_preflight_requires_injected_kmlog_evidence():
@@ -298,11 +308,12 @@ def test_checked_in_manifest_covers_reviewed_canary_controls():
     ]
     assert by_id["guan-yi-old-draft-key"]["required_visible_text"] == [
         "后来改稿这一段基本都删掉了",
-        "只有一个真的",
-        "匣中有门，心中有钥",
+        "他身旁的灯灭着，从未亮起",
+        "从他心口拿出一枚连着红绳的钥匙",
     ]
     assert by_id["guan-yi-old-draft-key"]["timeout_seconds"] == 30
-    assert by_id["guan-yi-old-draft-key"]["max_output_tokens"] == 500
+    assert by_id["guan-yi-old-draft-key"]["max_output_tokens"] == 700
+    assert by_id["guan-yi-old-draft-key"]["expected_claim_type"] == "old_draft"
     assert by_id["ai-self-over-perfect-response"]["required_source_ids"] == [
         "kmlog:18108"
     ]

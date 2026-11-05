@@ -15,7 +15,7 @@
   },
   {
     "id": "guan-yi-old-draft-key",
-    "prompt": "请从之前聊天记录中找出我发过的远古稿，并只根据其中“后来改稿这一段基本都删掉了”“只有一个真的”“匣中有门，心中有钥”回答：关颐如何确认真正的叶长依、拿到什么离开密室的线索？最后说明它是旧稿片段还是当前锁定正史。",
+    "prompt": "请从之前聊天记录中找出我发过的远古稿，并只根据其中“后来改稿这一段基本都删掉了”“他身旁的灯灭着，从未亮起”“从他心口拿出一枚连着红绳的钥匙”回答：关颐如何确认真正的叶长依、拿到什么离开密室的线索？最后说明它是旧稿片段还是当前锁定正史。",
     "conversation_id": "agent-canary-guan-yi-old-draft-key",
     "as_of_timestamp": "2026-04-16T22:05:02+00:00",
     "exclude_conversation_ids": [
@@ -26,13 +26,13 @@
     "required_source_ids": ["kmlog:7553"],
     "required_visible_text": [
       "后来改稿这一段基本都删掉了",
-      "只有一个真的",
-      "匣中有门，心中有钥"
+      "他身旁的灯灭着，从未亮起",
+      "从他心口拿出一枚连着红绳的钥匙"
     ],
     "timeout_seconds": 30,
-    "max_output_tokens": 500,
+    "max_output_tokens": 700,
     "expected_evidence_status": "supported",
-    "expected_claim_type": "design_suggestion"
+    "expected_claim_type": "old_draft"
   },
   {
     "id": "ai-self-over-perfect-response",
