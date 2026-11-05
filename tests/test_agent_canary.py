@@ -197,7 +197,11 @@ def test_context_preflight_requires_answer_bearing_visible_text():
             {
                 "role": "system",
                 "content": "id=7553 excerpt: 只有一个真的。",
-            }
+            },
+            {
+                "role": "user",
+                "content": "请结合匣中有门，心中有钥回答。",
+            },
         ],
         included_layers=Trace.included_layers,
         source_ids=Trace.source_ids,
@@ -298,13 +302,15 @@ def test_checked_in_manifest_covers_reviewed_canary_controls():
         "匣中有门，心中有钥",
     ]
     assert by_id["guan-yi-old-draft-key"]["timeout_seconds"] == 30
+    assert by_id["guan-yi-old-draft-key"]["max_output_tokens"] == 500
     assert by_id["ai-self-over-perfect-response"]["required_source_ids"] == [
         "kmlog:18108"
     ]
     rejection = by_id["plot-evidence-handoff-rejection"]
     assert rejection["forbidden_layers"] == ["kmlog_search"]
     assert rejection["as_of_timestamp"] == "2025-12-10T00:00:08.335+00:00"
-    assert rejection["timeout_seconds"] == 30
+    assert rejection["timeout_seconds"] == 60
+    assert rejection["max_output_tokens"] == 500
 
 
 @pytest.mark.anyio

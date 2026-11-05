@@ -138,6 +138,7 @@ def _validate_context_requirements(
             str(message.get("content") or "")
             for message in messages
             if isinstance(message, dict)
+            and str(message.get("role") or "").casefold() != "user"
         )
         missing_visible_text = [
             value for value in required_visible_text if value not in visible_text
@@ -176,6 +177,9 @@ async def _run(args: argparse.Namespace) -> int:
         "AGENT_CANARY_UPSTREAM_BASE", "CHAT_PROXY_UPSTREAM_BASE"
     )
     timeout = float(os.getenv("AGENT_CANARY_TIMEOUT_SECONDS", "15"))
+    max_output_tokens = int(os.getenv("AGENT_CANARY_MAX_OUTPUT_TOKENS", "500"))
+    if max_output_tokens <= 0:
+        raise ValueError("AGENT_CANARY_MAX_OUTPUT_TOKENS must be positive")
 
     provider = OpenAIProvider(base_url=upstream_base, api_key=api_key)
     model = OpenAIChatModel(model_name, provider=provider)
@@ -202,10 +206,16 @@ async def _run(args: argparse.Namespace) -> int:
         stage = "preflight"
         prefetched_context = None
         case_timeout: float | None = None
+        case_max_output_tokens: int | None = None
         try:
             case_timeout = float(case.get("timeout_seconds", timeout))
             if case_timeout <= 0:
                 raise ValueError("timeout_seconds must be positive")
+            case_max_output_tokens = int(
+                case.get("max_output_tokens", max_output_tokens)
+            )
+            if case_max_output_tokens <= 0:
+                raise ValueError("max_output_tokens must be positive")
             prefetched_context = await context_client.retrieve(
                 prompt=prompt,
                 conversation_id=conversation_id,
@@ -230,6 +240,7 @@ async def _run(args: argparse.Namespace) -> int:
                 prompt,
                 deps=deps,
                 usage_limits=UsageLimits(request_limit=3, tool_calls_limit=1),
+                model_settings={"max_tokens": case_max_output_tokens},
                 timeout=case_timeout,
             )
             if len(deps.tool_traces) != 1:
@@ -251,6 +262,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "model": model_name,
                 "destination": redact_destination(upstream_base),
                 "timeout_seconds": case_timeout,
+                "max_output_tokens": case_max_output_tokens,
                 "answer": result.output.model_dump(mode="json"),
                 "expectation_checks": expectation_checks,
                 "evidence": evidence_snapshot(prefetched_context[0]),
@@ -288,6 +300,7 @@ async def _run(args: argparse.Namespace) -> int:
                 "model": model_name,
                 "destination": redact_destination(upstream_base),
                 "timeout_seconds": case_timeout,
+                "max_output_tokens": case_max_output_tokens,
                 "error": {"type": type(exc).__name__, "message": str(exc)},
             }
             if prefetched_context is not None:

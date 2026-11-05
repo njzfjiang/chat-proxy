@@ -409,7 +409,9 @@ locks and forbidden retrieval remain fail-closed preflight requirements.
 Cases may also lock answer-bearing text with `required_visible_text`; this
 prevents a source-ID hit with a useless clipped excerpt from reaching the
 model. A case-specific `timeout_seconds` can extend model time without changing
-the default timeout for the rest of the manifest.
+the default timeout for the rest of the manifest. The default answer cap is
+`AGENT_CANARY_MAX_OUTPUT_TOKENS=500`; cases may override it with
+`max_output_tokens`.
 
 When clients send `user_text`, the proxy builds the upstream short-context
 window from SQLite instead of trusting the browser's current view. It prepends up
